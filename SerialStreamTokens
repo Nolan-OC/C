@@ -1,0 +1,199 @@
+#define D13 1
+#define LED 2
+#define SET 3
+#define STATUS 4
+#define VERSION 5
+#define HELP 6
+#define ON 7
+#define OFF 8
+#define BLINK 9
+#define GREEN 10
+#define RED 11
+#define NUM 12
+#define LEDs 13
+#define EOL 255
+
+char inputBuffer[50];
+int bufferIndex = 0;
+
+struct TokenEntry{
+  char letterOne;
+  char letterTwo;
+  byte wordLen;
+  byte tokenNum;
+};
+
+struct TokenEntry tokenTable[14] = {
+  {'D','1',3, 1 },
+  {'L','E',3, 2 },
+  {'S','E',3, 3 },
+  {'S','T',6, 4 },
+  {'V','E',7, 5 },
+  {'H','E',4, 6 },
+  {'O','N',2, 7 },
+  {'O','F',3, 8 },
+  {'B','L',5, 9 },
+  {'G','R',5, 10 },
+  {'R','E',3, 11 },
+  {'N','U',3, 12 },
+  {'L','E',4, 13 },
+  {'E','O',3, 255 },
+};
+void setup() {
+  // put your setup code here, to run once:
+  pinMode(13,OUTPUT); //Green pin
+  pinMode(12,OUTPUT); //Red pin
+  Serial.begin(9600);
+  Serial.println("Enter String: ");
+}
+
+void readTokenBuffer(byte tokenBuffer[])
+{
+  switch(tokenBuffer[0]){
+    case D13:
+      switch(tokenBuffer[1]){
+        case ON:
+          //TURN D13 ON
+          Serial.println("TURNING D13 ON");
+          break;
+        case OFF:
+          //TURN D13 OFF
+          Serial.println("TURNING D13 OFF");
+          break;
+        case BLINK:
+          //SET D13 to BLINK
+          Serial.println("TURNING D13 BLINK");
+          break;
+        default:
+          Serial.println("Please enter a valid command following D13");
+          break;
+      }
+      break;
+    case LED:
+      Serial.println("CHANGING the led");
+      break;
+    case STATUS:
+      Serial.println("printing the stats");
+      break;
+    case VERSION:
+      Serial.println("printing the version");
+      break;
+    case HELP:
+      Serial.println("print help menu");
+      break;
+      }
+}
+void processInput()
+{
+  //print inputted string
+  Serial.print("Received: ");
+  Serial.println(inputBuffer);
+
+  //split char array into tokens
+  byte tokenBuffer[50];
+  byte tokenIndex = 0;
+  byte wordIndex = 0;
+  for(int i = 0; i<sizeof(inputBuffer)/sizeof(inputBuffer[0]); i++)
+  {
+    char c = inputBuffer[i];
+    //test if char is space, if it is we want to check for proper token
+    // set up a nested loop where i is the index int of the stream and j points to the start of the current word
+    if(c == 32 || c == '\0'){
+      Serial.print(wordIndex);
+      Serial.print('-');
+      Serial.println(i-1);
+      for(int j = wordIndex; j<i; j++)
+      {
+        Serial.print(inputBuffer[j]);
+      }
+      Serial.println(" ");
+      
+      //TODO if word is token add to token buffer
+      for(int t = 0; t < sizeof(tokenTable)/sizeof(tokenTable[0]); t++)
+      {
+        //very long check to see if first letter, second letter, and wordlengths all match up
+        if(tokenTable[t].letterOne == inputBuffer[wordIndex] && 
+        tokenTable[t].letterTwo == inputBuffer[wordIndex+1] && 
+        tokenTable[t].wordLen == i - wordIndex)
+        {
+          Serial.print("MATCH! Code:");
+          Serial.println(tokenTable[t].tokenNum);
+          tokenBuffer[tokenIndex] = tokenTable[t].tokenNum;
+          tokenIndex ++;
+          //add token to tokenBuffer
+          break;
+        }
+      }
+      wordIndex = i+1;
+
+      //if the char is terminator end the sequence
+      if(c == '\0'){
+        bufferIndex = 0;
+        inputBuffer[bufferIndex] = '\0';
+        break;
+      }
+    }else{
+      //no need to do anything
+    }
+  }
+  //end the token buffer
+  tokenBuffer[tokenIndex] = '\0';
+  Serial.print("token buffer: ");
+  for(int i = 0; i < sizeof(tokenBuffer)/sizeof(tokenTable[0]); i++)
+  {
+    if(tokenBuffer[i] == '\0')
+    {
+      //end of stream
+      break;
+    }
+    Serial.print(tokenBuffer[i]);
+    Serial.print("-");
+  }
+  Serial.println(" ");
+  
+readTokenBuffer(tokenBuffer);
+  
+  //reset input buffer
+  bufferIndex = 0;
+  inputBuffer[bufferIndex] = '\0';
+}
+void loop() {
+  // take input serial buffer
+  if(Serial.available()>0){
+    char incomingChar = Serial.read();
+    //check for backspace
+    if(incomingChar == 127 && bufferIndex > 0){
+      bufferIndex --;
+      inputBuffer[bufferIndex] = '\0';
+    }
+    // check for enter key press
+    else if(incomingChar == '\r'){
+      processInput();
+      }else{
+      //make sure we have not exceeded size of inputbuffer
+      if(bufferIndex < 50 -1){
+        inputBuffer[bufferIndex] = incomingChar;
+        bufferIndex++;
+        inputBuffer[bufferIndex] = '\0';
+      }
+    }
+
+    Serial.print("Input: ");
+    Serial.println(inputBuffer);
+  }
+
+  // handle blinking seperately from input buffer
+  //toggleLED(13,true);
+
+}
+
+void toggleLED(int pin, bool on){
+  switch(on){
+    case true:
+      digitalWrite(pin,HIGH);
+      break;
+    case false:
+      digitalWrite(pin,LOW);
+      break;
+  }
+}
