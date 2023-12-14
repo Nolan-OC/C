@@ -15,8 +15,6 @@
 #define t_WORD 254
 #define t_EOL 255
 
-#include <stdio.h>
-
 char inputBuffer[50];
 int bufferIndex = 0;
 
@@ -220,6 +218,7 @@ void processInput()
       bool spaceFound = false;
       for(int num = 0; num < 50; num ++){
         if(inputBuffer[wordIndex + num] == '\0'){
+          intAsArr[index] = '\0';
           break;
         }
         else if(inputBuffer[wordIndex + num] == ' ' && spaceFound){
@@ -232,14 +231,15 @@ void processInput()
         }
         if(spaceFound){
           intAsArr[index] = inputBuffer[wordIndex+num];
+          Serial.print(intAsArr[index]);
           num++;
           index++;
         }
       }
+      
       //convert char array from stream to integer
-      int result = 0;
-      //char intsAsArr[5] = {'-', '1', '2', '3', '\0'};
-      sscanf(intAsArr, "%d", &result);
+      char myarray[5] = {'-', '1', '2', '3', '\0'};
+      int result = atoi(intAsArr);
       Serial.print("converted to int = ");
       Serial.println(result);
       
