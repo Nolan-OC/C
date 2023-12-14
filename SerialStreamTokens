@@ -15,6 +15,8 @@
 #define t_WORD 254
 #define t_EOL 255
 
+#include <stdio.h>
+
 char inputBuffer[50];
 int bufferIndex = 0;
 
@@ -177,6 +179,7 @@ void readTokenBuffer(byte tokenBuffer[])
   //clear token buffer
   tokenBuffer[0] = '\0';
 }
+
 void processInput()
 {
   //print inputted string
@@ -187,28 +190,60 @@ void processInput()
   byte tokenBuffer[50];
   byte tokenIndex = 0;
   byte wordIndex = 0;
+  
+  //parse out words from the input buffer
   for(int i = 0; i<sizeof(inputBuffer)/sizeof(inputBuffer[0]); i++)
   {
     char c = inputBuffer[i];
+    
     //test if char is space, if it is we want to check for proper token
     // set up a nested loop where i is the index int of the stream and wordIndex points to the start of the current word
     if(c == 32 || c == '\0'){
-
       // if current word is token add to token buffer
       for(int t = 0; t < sizeof(tokenTable)/sizeof(tokenTable[0]); t++)
       {
         // check if first letter, second letter, and wordlengths all match up
         if(tokenTable[t].letterOne == inputBuffer[wordIndex] && 
         tokenTable[t].letterTwo == inputBuffer[wordIndex+1] && 
-        tokenTable[t].wordLen == i - wordIndex)
-        {
-          //TODO GET INTEGER
-          tokenBuffer[tokenIndex] = tokenTable[t].tokenNum; 
+        tokenTable[t].wordLen == i - wordIndex){
+          tokenBuffer[tokenIndex] = tokenTable[t].tokenNum;
           tokenIndex ++;
           break;
         }
       }
       wordIndex = i+1;
+
+    // Get a substring of the next word which should be an integer indicating blink frequency
+    if(tokenBuffer[tokenIndex] == t_BLINK && tokenBuffer[tokenIndex-1] == t_SET){
+      char intAsArr[50];
+      byte index = 0;
+      bool spaceFound = false;
+      for(int num = 0; num < 50; num ++){
+        if(inputBuffer[wordIndex + num] == '\0'){
+          break;
+        }
+        else if(inputBuffer[wordIndex + num] == ' ' && spaceFound){
+          intAsArr[num] = '\0';
+          break;
+        }
+        else if(inputBuffer[wordIndex + num] == ' ' && !spaceFound){
+          spaceFound = true;
+          num ++; //moves pointer past the space it just found
+        }
+        if(spaceFound){
+          intAsArr[index] = inputBuffer[wordIndex+num];
+          num++;
+          index++;
+        }
+      }
+      //convert char array from stream to integer
+      int result = 0;
+      //char intsAsArr[5] = {'-', '1', '2', '3', '\0'};
+      sscanf(intAsArr, "%d", &result);
+      Serial.print("converted to int = ");
+      Serial.println(result);
+      
+    }
 
       //if the char is terminator end the sequence
       if(c == '\0'){
@@ -218,7 +253,7 @@ void processInput()
       }
     }
   }
-  //end the token buffer
+  //end and print the token buffer
   tokenBuffer[tokenIndex] = '\0';
   Serial.print("Token Buffer: ");
   for(int i = 0; i < sizeof(tokenBuffer)/sizeof(tokenTable[0]); i++)
@@ -235,7 +270,6 @@ void processInput()
   Serial.println(" ");
   
   readTokenBuffer(tokenBuffer);
-  
   //reset input buffer
   bufferIndex = 0;
   inputBuffer[bufferIndex] = '\0';
