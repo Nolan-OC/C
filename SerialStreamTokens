@@ -1,5 +1,5 @@
 #define t_D13 1
-#define t_LED 2
+#define t_LEDS 2
 #define t_SET 3
 #define t_STATUS 4
 #define t_VERSION 5
@@ -11,8 +11,6 @@
 #define t_RED 11
 #define t_NUM 12
 #define t_LEDs 13
-
-#define t_WORD 254
 #define t_EOL 255
 
 char inputBuffer[50];
@@ -27,7 +25,7 @@ struct Light{
 };
 struct Light lights[2] = {
   {13, false, false}, // built in
-  {11, false, false}, // LED is set to 11-red by default green woudl be 12
+  {11, false, false}, // LED is set to 11-red by default green would be 12
 };
 struct TokenEntry{
   char letterOne;
@@ -36,9 +34,9 @@ struct TokenEntry{
   byte tokenNum;
 };
 
-struct TokenEntry tokenTable[15] = {
+struct TokenEntry tokenTable[14] = {
   {'D','1', 3, 1 },
-  {'L','E', 3, 2 },
+  {'L','E', 4, 2 },
   {'S','E', 3, 3 },
   {'S','T', 6, 4 },
   {'V','E', 7, 5 },
@@ -50,7 +48,6 @@ struct TokenEntry tokenTable[15] = {
   {'R','E', 3, 11 },
   {'N','U', 3, 12 },
   {'L','E', 4, 13 },
-  {'W','O', 4, 254 },
   {'E','O', 3, 255 },
 };
 
@@ -95,7 +92,7 @@ void statusLED(){
     }
     Serial.print("\nCurrent BLINK interval set to ");
     Serial.println(blinkInterval);
-    Serial.println("------------------");
+    Serial.println("------------------\n");
 }
 
 void printHelp(){
@@ -103,7 +100,7 @@ void printHelp(){
   Serial.println("LED - followed by ON OFF GREEN RED or BLINK");
   Serial.println("D13 - followed by ON OFF or BLINK");
   Serial.println("VERSION - will print the current version");
-  Serial.println("STATUS - will print the status of all LEDs");
+  Serial.println("STATUS followed by LEDS - will print the status of all LEDs");
 }
 
 void readTokenBuffer(byte tokenBuffer[])
@@ -131,25 +128,30 @@ void readTokenBuffer(byte tokenBuffer[])
           break;
       }
       break;
-    case t_LED:
+    case t_LEDS:
       switch(tokenBuffer[1]){
         case t_GREEN:
+          Serial.println("SETTING LED GREEN");
           lights[1].pinNum = 12;
           digitalWrite(11,LOW);
           manageLED(&lights[1],lights[1].isOn,lights[1].isBlink);
           break;
         case t_RED:
+          Serial.println("SETTING LED RED");
           lights[1].pinNum = 11;
           digitalWrite(12,LOW);
           manageLED(&lights[1],lights[1].isOn,lights[1].isBlink);
           break;
         case t_ON:
+          Serial.println("TURNING LED ON");
           manageLED(&lights[1],true,lights[1].isBlink);
           break;
         case t_OFF:
+          Serial.println("TURNING LED GREEN");
           manageLED(&lights[1],false,false);
           break;
         case t_BLINK:
+          Serial.println("SETTING LED TO BLINK");
           manageLED(&lights[1],lights[1].isOn,true);
           break;
         
@@ -158,16 +160,26 @@ void readTokenBuffer(byte tokenBuffer[])
     case t_SET:
       switch(tokenBuffer[1]){
         case t_BLINK:
-          // TODO reconstruct integer sent by token buffer
-           //int rec = (int)(((unsigned)tokenBuffer[2] << 8) | tokenBuffer[3] );
+            //reconstruct integer sent by token buffer
+           int rec = (int)(((unsigned)tokenBuffer[2] << 8) | tokenBuffer[3] );
+           Serial.print("Setting Blink Interval To: ");
+           Serial.println(rec);
+           blinkInterval = rec;
           break;
       }
       break;
     case t_STATUS:
-      statusLED();
+      switch(tokenBuffer[1]){
+        case t_LEDS:
+          statusLED();
+          break;
+        default:
+          Serial.println("Unrecognized Command. Did you mean to write STATUS LEDS ?");
+          break;
+      }
       break;
     case t_VERSION:
-      Serial.println("Version: 0.1");
+      Serial.println("Version: 1.0");
       break;
     case t_HELP:
       printHelp();
@@ -181,7 +193,7 @@ void readTokenBuffer(byte tokenBuffer[])
 void processInput()
 {
   //print inputted string
-  Serial.print("Received Input: ");
+  Serial.print("\nReceived Input: ");
   Serial.println(inputBuffer);
 
   //split char array into tokens
@@ -212,38 +224,36 @@ void processInput()
       wordIndex = i+1;
 
     // Get a substring of the next word which should be an integer indicating blink frequency
-    if(tokenBuffer[tokenIndex] == t_BLINK && tokenBuffer[tokenIndex-1] == t_SET){
-      char intAsArr[50];
-      byte index = 0;
-      bool spaceFound = false;
-      for(int num = 0; num < 50; num ++){
-        if(inputBuffer[wordIndex + num] == '\0'){
-          intAsArr[index] = '\0';
-          break;
-        }
-        else if(inputBuffer[wordIndex + num] == ' ' && spaceFound){
-          intAsArr[num] = '\0';
-          break;
-        }
-        else if(inputBuffer[wordIndex + num] == ' ' && !spaceFound){
-          spaceFound = true;
-          num ++; //moves pointer past the space it just found
-        }
-        if(spaceFound){
-          intAsArr[index] = inputBuffer[wordIndex+num];
-          Serial.print(intAsArr[index]);
-          num++;
-          index++;
-        }
+      if(tokenBuffer[tokenIndex] == t_BLINK && tokenBuffer[tokenIndex-1] == t_SET){
+        char intAsArr[50];
+        byte index = 0;
+        bool spaceFound = false;
+        for(int num = 0; num < 50; num ++){
+          char currentChar = inputBuffer[wordIndex + num];
+          if(currentChar == '\0' || (currentChar == ' ' && spaceFound)){
+            intAsArr[index] = '\0';
+            break;
+          }
+          else if (currentChar == ' ' && !spaceFound){
+            spaceFound = true;
+          }
+          else if (spaceFound){
+            intAsArr[index] = currentChar;
+            index ++;
+          }
+        
       }
-      
-      //convert char array from stream to integer
-      char myarray[5] = {'-', '1', '2', '3', '\0'};
+      intAsArr[index] = '\0';
       int result = atoi(intAsArr);
-      Serial.print("converted to int = ");
-      Serial.println(result);
-      
-    }
+      byte high = (result >> 8) & 0xFF;
+      byte low = result & 0xFF;
+      tokenIndex++;
+      tokenBuffer[tokenIndex] = high;
+      tokenIndex++;
+      tokenBuffer[tokenIndex] = low;
+      tokenIndex++;
+      int reassemble = (high<<8) | low;
+      }
 
       //if the char is terminator end the sequence
       if(c == '\0'){
@@ -285,7 +295,7 @@ void setup() {
   Serial.println("\nEnter Commands: ");
 }
 void loop() {
-  // setup timer
+  // setup timer for blink/input independence
   unsigned long currentMillis = millis();
   // calculate a delta time
   if(currentMillis - previousMillis >= blinkInterval){
@@ -298,7 +308,6 @@ void loop() {
     }
   }
 
-  
   // take input serial buffer
   if(Serial.available()>0){
     char incomingChar = Serial.read();
@@ -322,31 +331,4 @@ void loop() {
     Serial.print("\nInput: ");
     Serial.println(inputBuffer);
   }
-}
-
-  
-void TODO(){
-  /*
-    Serial.println("Token Check");
-    Serial.println(tokenBuffer[tokenIndex-1]);
-    Serial.println(tokenBuffer[tokenIndex]);
-    
-    Serial.println("need to take next two bytes as integer");
-    tokenIndex ++;
-    tokenBuffer[tokenIndex] = t_WORD;
-    int foo = 5000; //grab the integer
-    unsigned char lsb = tokenBuffer[tokenIndex+1];
-    unsigned char msb = tokenBuffer[tokenIndex+2];
-    //unsigned char lsb = (unsigned)foo & 0xff; // mask the lower 8 bits
-    //unsigned char msb = (unsigned)foo >> 8;   // shift the higher 8 bits
-    Serial.println(lsb);
-    Serial.println(msb);
-    int rec = (int)(((unsigned)msb << 8) | lsb );
-    Serial.println(rec);
-    tokenIndex ++;
-    tokenBuffer[tokenIndex] = lsb;
-    tokenIndex ++;
-    tokenBuffer[tokenIndex] = msb;
-  }
-  */
 }
