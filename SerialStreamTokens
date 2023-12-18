@@ -155,25 +155,26 @@ void setInterval(int interval){
   blinkInterval = interval;
 }
 void parseInts(unsigned char numIntsToFind, int startingIndex){
-  unsigned char spacesFound = 0;
+  unsigned char intsFound = 0;
   unsigned char index = startingIndex;
   unsigned char oldIndex = index;
   char currentChar = inputBuffer[startingIndex];
-  for(int i = 0; i < 50; i++){
-    if(currentChar == ' '){index++;}
+  unsigned int returnInt = 0;
+  char returnIndex = 0;
+
+  while(intsFound < numIntsToFind){
     currentChar = inputBuffer[index];
     Serial.println(currentChar);
+
     if(currentChar == ' ' || currentChar == '\0'){
-      //a space is found get the last word
-      //grab substring from oldIndex to index
-      //Serial.print("New word : "); Serial.print(inputBuffer[oldIndex]); Serial.println(inputBuffer[index-1]);
-      oldIndex = index;
-
-      
-
+      intsFound++;
       if(currentChar == '\0'){return;}
     }
-
+    else if(isdigit(currentChar)){
+      returnInt = atoi(currentChar);
+      Serial.print("---"); Serial.println(returnInt);
+      returnIndex++;
+    }
     index++;
   }
   Serial.println();
@@ -416,7 +417,12 @@ void processInput()
       }
       //IF TOKEN == ADD, Send next two unsigned chars as tokens
       else if(tokenBuffer[tokenIndex-1] == t_ADD){
-        parseInts(3, wordIndex);
+        Serial.println("Parsing ints");
+        parseInts(2, wordIndex);
+        tokenIndex++;
+        tokenBuffer[tokenIndex] = 100;
+        tokenIndex++;
+        tokenBuffer[tokenIndex] = 200;
         
       }
       //IF TOKEN == RGB take next three unsigned chars as tokens
