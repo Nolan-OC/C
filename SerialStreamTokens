@@ -23,6 +23,7 @@
 #define t_HIGHLOW 18
 #define t_TEMP 19
 #define t_RGB 20
+#define t_RGBSET 21
 #define t_EOL 255
 
 //EEPROM
@@ -49,12 +50,21 @@ unsigned char f_secondMarker;
 unsigned char ft_minuteMarker;
 
 //TEMPERATURE & HUMIDITY
-int pinDHT11 = 2;
+#define pinDHT11 2
 SimpleDHT11 dht11(pinDHT11);
 byte nowTemp;
 byte nowHumid;
 byte highTemp;
 byte lowTemp;
+
+//RGB LED
+#define RGBPIN 3
+#define NUM_LEDS 4
+CRGB leds[NUM_LEDS];
+int blinkIntervalRGB = 1000;
+bool rgbOn = false;
+bool rgbBlink = false;
+unsigned long previousMillisRGB = 0;
 
 struct Light{
   byte pinNum;
@@ -72,7 +82,7 @@ struct TokenEntry{
   byte tokenNum;
 };
 
-struct TokenEntry tokenTable[21] = {
+struct TokenEntry tokenTable[22] = {
   {'D','1', 3, 1 },
   {'L','E', 3, 2 },
   {'S','E', 3, 3 },
@@ -93,6 +103,7 @@ struct TokenEntry tokenTable[21] = {
   {'H','I', 7, 18 },
   {'T','E', 4, 19 },
   {'R','G', 3, 20 },
+  {'R','G', 6, 21 },
   {'E','O', 3, 255 },
 };
 void storeCurrentTempHumid(){
@@ -115,7 +126,6 @@ void logTempHumidity(){
       Serial.print(F("Read DHT11 failed, err=")); Serial.println(err);
       return;
     }
-    else{Serial.print(globalTime.Minute); Serial.print(F(" Saving time temp and humidity at address ")); Serial.println(eeAddress);}
     // construct time temp humidity data
     if(temperature > highTemp){highTemp = temperature;}
     if(temperature < lowTemp){lowTemp = temperature;}
@@ -154,31 +164,42 @@ void setupClock()
 void setInterval(int interval){
   blinkInterval = interval;
 }
-void parseInts(unsigned char numIntsToFind, int startingIndex){
+int * parseInts(unsigned char numIntsToFind, int startingIndex){
   unsigned char intsFound = 0;
   unsigned char index = startingIndex;
   unsigned char oldIndex = index;
   char currentChar = inputBuffer[startingIndex];
-  unsigned int returnInt = 0;
-  char returnIndex = 0;
+
+  int* returnArr = (int*)malloc(4*sizeof(int)); //we know it will be max 3 numbers for the rgb, and one more for \0
+  int returnIndex = 0;
 
   while(intsFound < numIntsToFind){
     currentChar = inputBuffer[index];
-    Serial.println(currentChar);
 
     if(currentChar == ' ' || currentChar == '\0'){
       intsFound++;
-      if(currentChar == '\0'){return;}
-    }
-    else if(isdigit(currentChar)){
-      returnInt = atoi(currentChar);
-      Serial.print("---"); Serial.println(returnInt);
+      //take nums from oldindex to new index, concatinate and add to return arr
+
+      char concatenated[4];
+      int n = 0;
+      for(int i = oldIndex; i <= index-1; i++){
+        concatenated[n] = inputBuffer[i];
+        n++;
+      }
+      concatenated[n] = '\0';
+      //Add resulting int to array
+      int result = atoi(concatenated);
+      returnArr[returnIndex] = result;
       returnIndex++;
+      
+      oldIndex = index+1; //+1 to remove the space
+      if(currentChar == '\0'){
+        returnArr[returnIndex] = '\0';
+        return returnArr;
+      }
     }
     index++;
   }
-  Serial.println();
-  
 }
 //change an LED's status
 void manageLED(struct Light* ptr, bool on, bool isBlink){
@@ -231,7 +252,12 @@ void printHelp(){
 
 void setRGB(unsigned char r, unsigned char g, unsigned char b)
 {
-  //TODO SET RGB to r g b
+  //TODO RGBS
+  for(int i = 0; i<NUM_LEDS; i++){
+    leds[i].setRGB(g,r,b);
+  }
+  FastLED.show();
+  
 }
 void readTokenBuffer(byte tokenBuffer[])
 {
@@ -344,8 +370,27 @@ void readTokenBuffer(byte tokenBuffer[])
       printHelp();
       break;
     case t_ADD:
-      Serial.println(F("ADD NEXT TWO NUMS"));
+      Serial.print(F("SUM: ")); Serial.println(tokenBuffer[1] + tokenBuffer[2]);
       break;
+    case t_RGB:
+      //TODO PRINT OUT HIGH LOW TEMPS
+      Serial.print(F("NEW RGB VALUES: ")); Serial.print(tokenBuffer[1]); Serial.print(F(" "));
+      Serial.print(tokenBuffer[2]); Serial.print(F(" "));Serial.println(tokenBuffer[3]);
+      setRGB(tokenBuffer[1],tokenBuffer[2],tokenBuffer[3]);
+      break;
+    case t_RGBSET:
+      blinkIntervalRGB = tokenBuffer[1];
+      
+      if(rgbBlink == false){
+          Serial.print("Setting blink on");
+          rgbBlink = true;
+      }
+      else{
+        Serial.print("Setting blink off");
+        rgbBlink = false;
+      }
+        
+
   }
 
   //clear token buffer
@@ -417,16 +462,33 @@ void processInput()
       }
       //IF TOKEN == ADD, Send next two unsigned chars as tokens
       else if(tokenBuffer[tokenIndex-1] == t_ADD){
-        Serial.println("Parsing ints");
-        parseInts(2, wordIndex);
+        int* parsed = parseInts(2, wordIndex);
+
+        tokenBuffer[tokenIndex] = parsed[0];
         tokenIndex++;
-        tokenBuffer[tokenIndex] = 100;
+        tokenBuffer[tokenIndex] = parsed[1];
         tokenIndex++;
-        tokenBuffer[tokenIndex] = 200;
+
+        free(parsed);
         
       }
       //IF TOKEN == RGB take next three unsigned chars as tokens
-      //TODO setup rgb function in switch tree and method
+      else if(tokenBuffer[tokenIndex-1] == t_RGB){
+        int* parsed = parseInts(3, wordIndex);
+        tokenBuffer[tokenIndex] = parsed[0];
+        tokenIndex++;
+        tokenBuffer[tokenIndex] = parsed[1];
+        tokenIndex++;
+        tokenBuffer[tokenIndex] = parsed[2];
+        tokenIndex++;
+        
+        free(parsed);
+      }
+      else if(tokenBuffer[tokenIndex-1] == t_RGBSET){
+        int* parsed = parseInts(1, wordIndex);
+        tokenBuffer[tokenIndex] = parsed[0];
+        tokenIndex++;
+      }
 
       //if the char is terminator end the sequence
       if(c == '\0'){
@@ -439,8 +501,7 @@ void processInput()
   //end and print the token buffer
   tokenBuffer[tokenIndex] = '\0';
   Serial.print(F("Token Buffer: "));
-  for(int i = 0; i < sizeof(tokenBuffer)/sizeof(tokenTable[0]); i++)
-  {
+  for(int i = 0; i < sizeof(tokenBuffer)/sizeof(tokenBuffer[0]); i++){
     if(tokenBuffer[i] == '\0')
     {
       //end of stream break loop
@@ -463,6 +524,8 @@ void setup() {
   pinMode(12,OUTPUT); //Green LED pin
   pinMode(11,OUTPUT); //Red LED pin
   pinMode(LED_BUILTIN, OUTPUT); //Builtin D13 pin
+  
+  FastLED.addLeds<WS2811, RGBPIN, RGB>(leds, NUM_LEDS);
 
   Serial.begin(9600);
   Clock.begin();
@@ -473,7 +536,6 @@ void setup() {
   //Serial.println("\nEnter Commands: ");
 }
 void loop() {
-  // INDEPENDANT BLINK INTERVALS
   unsigned long currentMillis = millis();
   // calculate a delta time
   if(currentMillis - previousMillis >= blinkInterval){
@@ -483,6 +545,14 @@ void loop() {
       if(lights[i].isBlink){
         toggleLight(&lights[i]);
       }
+    }
+  }
+  if(currentMillis - previousMillisRGB >= blinkIntervalRGB){
+    previousMillisRGB = currentMillis;
+    //if blink set blink
+    if(rgbBlink)
+    {
+      
     }
   }
 
@@ -512,7 +582,7 @@ void loop() {
 
   //CHECK ALARMS TO LOG TIME, TEMP, HUMIDITY
   uint8_t AlarmsFired = Clock.checkAlarms();
-    if(AlarmsFired & 1)
+  if(AlarmsFired & 1)
   {
     if(f_secondMarker%5 == 0)
     {
