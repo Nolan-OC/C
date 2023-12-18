@@ -1,5 +1,10 @@
+#include <DS3231_Simple.h>
+#include <SimpleDHT.h>
+#include <FastLED.h>
+#include <EEPROM.h>
+
 #define t_D13 1
-#define t_LEDS 2
+#define t_LED 2
 #define t_SET 3
 #define t_STATUS 4
 #define t_VERSION 5
@@ -10,14 +15,47 @@
 #define t_GREEN 10
 #define t_RED 11
 #define t_NUM 12
-#define t_LEDs 13
+#define t_LEDS 13
+#define t_ADD 14
+#define t_READ 15
+#define t_CURRENT 16
+#define t_SAVED 17
+#define t_HIGHLOW 18
+#define t_TEMP 19
+#define t_RGB 20
 #define t_EOL 255
 
+//EEPROM
+unsigned char eeAddress;
+
+struct EEPROMEntry{
+  DateTime timeStamp;
+  int temperature;
+  int humidity;
+};
+
+//INPUT STREAM
 char inputBuffer[50];
 int bufferIndex = 0;
 
+//BLINK Counter
 int blinkInterval = 500;
 unsigned long previousMillis = 0;
+
+//CLOCK
+DS3231_Simple Clock;
+DateTime globalTime;
+unsigned char f_secondMarker;
+unsigned char ft_minuteMarker;
+
+//TEMPERATURE & HUMIDITY
+int pinDHT11 = 2;
+SimpleDHT11 dht11(pinDHT11);
+byte nowTemp;
+byte nowHumid;
+byte highTemp;
+byte lowTemp;
+
 struct Light{
   byte pinNum;
   bool isOn;
@@ -34,9 +72,9 @@ struct TokenEntry{
   byte tokenNum;
 };
 
-struct TokenEntry tokenTable[14] = {
+struct TokenEntry tokenTable[21] = {
   {'D','1', 3, 1 },
-  {'L','E', 4, 2 },
+  {'L','E', 3, 2 },
   {'S','E', 3, 3 },
   {'S','T', 6, 4 },
   {'V','E', 7, 5 },
@@ -48,13 +86,99 @@ struct TokenEntry tokenTable[14] = {
   {'R','E', 3, 11 },
   {'N','U', 3, 12 },
   {'L','E', 4, 13 },
+  {'A','D', 3, 14 },
+  {'R','E', 4, 15 },
+  {'C','U', 7, 16 },
+  {'S','A', 5, 17 },
+  {'H','I', 7, 18 },
+  {'T','E', 4, 19 },
+  {'R','G', 3, 20 },
   {'E','O', 3, 255 },
 };
+void storeCurrentTempHumid(){
+    byte temperature = 0;
+    byte humidity = 0;
+    int err = SimpleDHTErrSuccess;
+    if ((err = dht11.read(&temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
+      Serial.print(F("Read DHT11 failed, err=")); Serial.println(err);
+      return;
+    }
+    nowTemp = temperature;
+    nowHumid = humidity;
+}
+void logTempHumidity(){
+  //Logs Timestamp, temperature and humidity every 15 minutes
+    byte temperature = 0;
+    byte humidity = 0;
+    int err = SimpleDHTErrSuccess;
+    if ((err = dht11.read(&temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
+      Serial.print(F("Read DHT11 failed, err=")); Serial.println(err);
+      return;
+    }
+    else{Serial.print(globalTime.Minute); Serial.print(F(" Saving time temp and humidity at address ")); Serial.println(eeAddress);}
+    // construct time temp humidity data
+    if(temperature > highTemp){highTemp = temperature;}
+    if(temperature < lowTemp){lowTemp = temperature;}
+    struct EEPROMEntry entry;
+    entry.timeStamp = Clock.read();
+    entry.temperature = (int)temperature;
+    entry.humidity = (int)humidity;
 
+    EEPROM.put(eeAddress, entry);
+    eeAddress += sizeof(entry);
+}
+void readTempHumidity(){
+  //TODO PRINT THIS OUT WHEN CALLED BY TOKENS
+  struct EEPROMEntry eeVal;
+
+  EEPROM.get(eeAddress, eeVal);
+  Serial.println(eeAddress);
+  Serial.print(F("\n")); Clock.printTo(Serial, eeVal.timeStamp);
+  Serial.print(F("   Humidity "));  Serial.print(eeVal.humidity);
+  Serial.print(F("%   Temperature: ")); Serial.print(eeVal.temperature);Serial.println(F("C"));
+}
+void setupClock()
+{
+  globalTime = Clock.read();
+  // Load it with the date and time you want to set, for example
+  globalTime.Day    = 15;
+  globalTime.Month  = 12;
+  globalTime.Year   = 23; 
+  globalTime.Hour   = 13;
+  globalTime.Minute = 0;
+  globalTime.Second = 0;
+  
+  // Then write it to the clock
+  Clock.write(globalTime);
+}
 void setInterval(int interval){
   blinkInterval = interval;
 }
+void parseInts(unsigned char numIntsToFind, int startingIndex){
+  unsigned char spacesFound = 0;
+  unsigned char index = startingIndex;
+  unsigned char oldIndex = index;
+  char currentChar = inputBuffer[startingIndex];
+  for(int i = 0; i < 50; i++){
+    if(currentChar == ' '){index++;}
+    currentChar = inputBuffer[index];
+    Serial.println(currentChar);
+    if(currentChar == ' ' || currentChar == '\0'){
+      //a space is found get the last word
+      //grab substring from oldIndex to index
+      //Serial.print("New word : "); Serial.print(inputBuffer[oldIndex]); Serial.println(inputBuffer[index-1]);
+      oldIndex = index;
 
+      
+
+      if(currentChar == '\0'){return;}
+    }
+
+    index++;
+  }
+  Serial.println();
+  
+}
 //change an LED's status
 void manageLED(struct Light* ptr, bool on, bool isBlink){
   (*ptr).isOn = on;
@@ -77,32 +201,37 @@ void toggleLight(struct Light* ptr){
 }
 //print the status of all LEDS
 void statusLED(){
-  Serial.println("\n-----LED Status-----");
+  Serial.println(F("\n-----LED Status-----"));
   for(int i = 0; i < 2; i++){
     //pin num
-    Serial.println(lights[i].pinNum == 13 ? "Digital Pin:" : "LED:");
-    Serial.print("Pin: ");
+    Serial.println(lights[i].pinNum == 13 ? F("\nDigital Pin:") : F("\nLED:"));
+    Serial.print(F("Pin: "));
     Serial.println(lights[i].pinNum);
     //on off
-    Serial.print("Is On? ");
+    Serial.print(F("Is On? "));
     Serial.println(lights[i].isOn ? "Yes" : "No");
     //blinking?
-    Serial.print("Is Blinking? ");
+    Serial.print(F("Is Blinking? "));
     Serial.println(lights[i].isBlink ? "Yes" : "No");
     }
-    Serial.print("\nCurrent BLINK interval set to ");
+    Serial.print(F("\nCurrent BLINK interval set to "));
     Serial.println(blinkInterval);
-    Serial.println("------------------\n");
+    Serial.println(F("------------------\n"));
 }
 
 void printHelp(){
-  Serial.println("\n-----Helpful Commands-----");
-  Serial.println("LED - followed by ON OFF GREEN RED or BLINK");
-  Serial.println("D13 - followed by ON OFF or BLINK");
-  Serial.println("VERSION - will print the current version");
-  Serial.println("STATUS followed by LEDS - will print the status of all LEDs");
+  Serial.println(F("\n-----Helpful Commands-----"));
+  Serial.println(F("LED - followed by ON OFF GREEN RED or BLINK"));
+  Serial.println(F("D13 - followed by ON OFF or BLINK"));
+  Serial.println(F("VERSION - will print the current version"));
+  Serial.println(F("STATUS followed by LEDS - will print the status of all LEDs"));
+  Serial.println(F("READ followed by CURRENT SAVED or HIGHLOW followed by TEMP will print out temperature/humidity info"));
 }
 
+void setRGB(unsigned char r, unsigned char g, unsigned char b)
+{
+  //TODO SET RGB to r g b
+}
 void readTokenBuffer(byte tokenBuffer[])
 {
   switch(tokenBuffer[0]){
@@ -110,48 +239,48 @@ void readTokenBuffer(byte tokenBuffer[])
       switch(tokenBuffer[1]){
         case t_ON:
           //TURN D13 ON
-          Serial.println("TURNING D13 ON");
+          Serial.println(F("TURNING D13 ON"));
           manageLED(&lights[0],true, false);
           break;
         case t_OFF:
           //TURN D13 OFF
-          Serial.println("TURNING D13 OFF");
+          Serial.println(F("TURNING D13 OFF"));
           manageLED(&lights[0],false, false);
           break;
         case t_BLINK:
           //SET D13 to BLINK
-          Serial.println("TURNING D13 BLINK");
+          Serial.println(F("TURNING D13 BLINK"));
           manageLED(&lights[0],true, true);
           break;
         default:
-          Serial.println("Please enter a valid command following D13");
+          Serial.println(F("Please enter a valid command following D13"));
           break;
       }
       break;
-    case t_LEDS:
+    case t_LED:
       switch(tokenBuffer[1]){
         case t_GREEN:
-          Serial.println("SETTING LED GREEN");
+          Serial.println(F("SETTING LED GREEN"));
           lights[1].pinNum = 12;
           digitalWrite(11,LOW);
           manageLED(&lights[1],lights[1].isOn,lights[1].isBlink);
           break;
         case t_RED:
-          Serial.println("SETTING LED RED");
+          Serial.println(F("SETTING LED RED"));
           lights[1].pinNum = 11;
           digitalWrite(12,LOW);
           manageLED(&lights[1],lights[1].isOn,lights[1].isBlink);
           break;
         case t_ON:
-          Serial.println("TURNING LED ON");
+          Serial.println(F("TURNING LED ON"));
           manageLED(&lights[1],true,lights[1].isBlink);
           break;
         case t_OFF:
-          Serial.println("TURNING LED GREEN");
+          Serial.println(F("TURNING LED GREEN"));
           manageLED(&lights[1],false,false);
           break;
         case t_BLINK:
-          Serial.println("SETTING LED TO BLINK");
+          Serial.println(F("SETTING LED TO BLINK"));
           manageLED(&lights[1],lights[1].isOn,true);
           break;
         
@@ -160,11 +289,10 @@ void readTokenBuffer(byte tokenBuffer[])
     case t_SET:
       switch(tokenBuffer[1]){
         case t_BLINK:
-            //reconstruct integer sent by token buffer
-           int rec = (int)(((unsigned)tokenBuffer[2] << 8) | tokenBuffer[3] );
-           Serial.print("Setting Blink Interval To: ");
-           Serial.println(rec);
-           blinkInterval = rec;
+          //reconstruct integer sent by token buffer
+          int rec = (int)(((unsigned)tokenBuffer[2] << 8) | tokenBuffer[3] );
+          blinkInterval = rec;
+          Serial.print(F("Setting Blink Interval To: ")); Serial.println(rec);
           break;
       }
       break;
@@ -174,17 +302,50 @@ void readTokenBuffer(byte tokenBuffer[])
           statusLED();
           break;
         default:
-          Serial.println("Unrecognized Command. Did you mean to write STATUS LEDS ?");
+          Serial.println(F("Unrecognized Command. Did you mean to write STATUS LEDS ?"));
           break;
       }
       break;
+    case t_READ:
+      switch(tokenBuffer[1]){
+        case t_CURRENT:
+          switch(tokenBuffer[2]){
+            case t_TEMP:
+              Serial.print(F("Current Temperature: ")); Serial.print(nowTemp); Serial.print(F("C Current Humidity: ")); 
+              Serial.print(nowHumid); Serial.println(F("%"));
+              break;
+          }
+          break;
+        case t_SAVED:
+          switch(tokenBuffer[2]){
+            case t_TEMP:
+            readTempHumidity();
+            break;
+          }
+          break;
+        case t_HIGHLOW:
+        switch(tokenBuffer[2]){
+          case t_TEMP:
+            //TODO PRINT OUT HIGH LOW TEMPS
+            Serial.println(F("PRINTING OUT HIGHEST LOWEST TEMPS"));
+            Serial.print(F("Highest Temp: ")); Serial.println(highTemp);
+            Serial.print(F("Lowest Temp: ")); Serial.println(lowTemp);
+            break;
+        }
+        break;
+      break;
+      }
+      break;
     case t_VERSION:
-      Serial.println("Version: 1.0");
+      Serial.println(F("Version: 2.0"));
       break;
     case t_HELP:
       printHelp();
       break;
-      }
+    case t_ADD:
+      Serial.println(F("ADD NEXT TWO NUMS"));
+      break;
+  }
 
   //clear token buffer
   tokenBuffer[0] = '\0';
@@ -193,7 +354,7 @@ void readTokenBuffer(byte tokenBuffer[])
 void processInput()
 {
   //print inputted string
-  Serial.print("\nReceived Input: ");
+  Serial.print(F("\nReceived Input: "));
   Serial.println(inputBuffer);
 
   //split char array into tokens
@@ -223,7 +384,7 @@ void processInput()
       }
       wordIndex = i+1;
 
-    // Get a substring of the next word which should be an integer indicating blink frequency
+      // IF TOKENS == SET & BLINK, Get a substring of the next word which should be an integer indicating blink frequency
       if(tokenBuffer[tokenIndex] == t_BLINK && tokenBuffer[tokenIndex-1] == t_SET){
         char intAsArr[50];
         byte index = 0;
@@ -241,7 +402,6 @@ void processInput()
             intAsArr[index] = currentChar;
             index ++;
           }
-        
       }
       intAsArr[index] = '\0';
       int result = atoi(intAsArr);
@@ -254,6 +414,13 @@ void processInput()
       tokenIndex++;
       int reassemble = (high<<8) | low;
       }
+      //IF TOKEN == ADD, Send next two unsigned chars as tokens
+      else if(tokenBuffer[tokenIndex-1] == t_ADD){
+        parseInts(3, wordIndex);
+        
+      }
+      //IF TOKEN == RGB take next three unsigned chars as tokens
+      //TODO setup rgb function in switch tree and method
 
       //if the char is terminator end the sequence
       if(c == '\0'){
@@ -265,7 +432,7 @@ void processInput()
   }
   //end and print the token buffer
   tokenBuffer[tokenIndex] = '\0';
-  Serial.print("Token Buffer: ");
+  Serial.print(F("Token Buffer: "));
   for(int i = 0; i < sizeof(tokenBuffer)/sizeof(tokenTable[0]); i++)
   {
     if(tokenBuffer[i] == '\0')
@@ -273,11 +440,11 @@ void processInput()
       //end of stream break loop
       break;
     }
-    Serial.print("-");
+    Serial.print(F("-"));
     Serial.print(tokenBuffer[i]);
 
   }
-  Serial.println(" ");
+  Serial.println(F(" "));
   
   readTokenBuffer(tokenBuffer);
   //reset input buffer
@@ -287,15 +454,20 @@ void processInput()
 
 void setup() {
   // put your setup code here, to run once:
-  pinMode(12,OUTPUT); //Green pin
-  pinMode(11,OUTPUT); //Red pin
-  pinMode(LED_BUILTIN, OUTPUT); //Builtin pin
+  pinMode(12,OUTPUT); //Green LED pin
+  pinMode(11,OUTPUT); //Red LED pin
+  pinMode(LED_BUILTIN, OUTPUT); //Builtin D13 pin
 
   Serial.begin(9600);
-  Serial.println("\nEnter Commands: ");
+  Clock.begin();
+  setupClock();
+  Clock.setAlarm(DS3231_Simple::ALARM_EVERY_SECOND); 
+  Clock.setAlarm(DS3231_Simple::ALARM_EVERY_MINUTE);
+
+  //Serial.println("\nEnter Commands: ");
 }
 void loop() {
-  // setup timer for blink/input independence
+  // INDEPENDANT BLINK INTERVALS
   unsigned long currentMillis = millis();
   // calculate a delta time
   if(currentMillis - previousMillis >= blinkInterval){
@@ -308,7 +480,7 @@ void loop() {
     }
   }
 
-  // take input serial buffer
+  // TAKE INPUT FROM SERIAL
   if(Serial.available()>0){
     char incomingChar = Serial.read();
     //check for backspace
@@ -319,7 +491,7 @@ void loop() {
     // check for enter key press
     else if(incomingChar == '\r'){
       processInput();
-      }else{
+    }else{
       //make sure we have not exceeded size of inputbuffer
       if(bufferIndex < 50 -1){
         inputBuffer[bufferIndex] = incomingChar;
@@ -328,7 +500,31 @@ void loop() {
       }
     }
 
-    Serial.print("\nInput: ");
+    Serial.print(F("\nInput: "));
     Serial.println(inputBuffer);
   }
+
+  //CHECK ALARMS TO LOG TIME, TEMP, HUMIDITY
+  uint8_t AlarmsFired = Clock.checkAlarms();
+    if(AlarmsFired & 1)
+  {
+    if(f_secondMarker%5 == 0)
+    {
+      //read current temperature and humidity into global variable
+      storeCurrentTempHumid();
+      f_secondMarker = 0;
+    }
+    f_secondMarker++;
+  }
+  if(AlarmsFired & 2)
+  {
+    if(ft_minuteMarker%1 == 0){
+      //store temp and humidity to eeprom
+      logTempHumidity();
+      ft_minuteMarker = 0;
+    }
+    ft_minuteMarker++;
+  }
+  
 }
+//bitbucket = ATBBvJRRbjmQQ2k9E5X7M9n55yc2D61D54AC
