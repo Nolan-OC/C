@@ -33,10 +33,11 @@
 
 //NETWORK
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress ip(192, 168, 16, 181);  
-byte sendTo[] = {192, 168, 16, 179};      //computer ip
+IPAddress ip(192, 168, 16, 181);       //arduino ip
+byte sendTo[] = {192, 168, 16, 255};   //computer ip
 unsigned int localPort = 8888;   
 EthernetUDP Udp; 
+char packetBuffer[UDP_TX_PACKET_MAX_SIZE];
 
 //EEPROM
 unsigned char eeAddress;
@@ -167,7 +168,7 @@ long myAtoi(char* str){
   int sign = 1;
   int i = 0;
 
-  //first check if num has negative sign at index 0
+  //if negative sign skip this index
   if(str[0] == '-') {
     sign = -1;
     i++;
@@ -182,28 +183,24 @@ void storeCurrentTempHumid(){
     byte humidity = 0;
     int err = SimpleDHTErrSuccess;
     if ((err = dht22.read(&temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
-      Serial.print(F("Read DHT22 failed, err=")); Serial.println(err);
       return;
     }
+    
+    if(temperature > highTemp){highTemp = temperature;}
+    if(temperature < lowTemp){lowTemp = temperature;}
+    
     nowTemp = temperature;
     nowHumid = humidity;
 }
 void logTempHumidity(){
   //Logs Timestamp, temperature and humidity every 15 minutes struct is 11 bytes
-    byte temperature = 0;
-    byte humidity = 0;
-    int err = SimpleDHTErrSuccess;
-    if ((err = dht22.read(&temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
-      Serial.print(F("Read DHT22 failed, err=")); Serial.println(err);
-      return;
-    }
+
     // construct time temp humidity data
-    if(temperature > highTemp){highTemp = temperature;}
-    if(temperature < lowTemp){lowTemp = temperature;}
+    
     struct EEPROMEntry entry;
     entry.timeStamp = Clock.read();
-    entry.temperature = (int)temperature;
-    entry.humidity = (int)humidity;
+    entry.temperature = (int)nowTemp;
+    entry.humidity = (int)nowHumid;
 
     EEPROM.put(eeAddress, entry);
     eeAddress += sizeof(entry);
@@ -233,17 +230,17 @@ void setupClock(int day, int month, int year, int hour, int minute, int second)
   Clock.printTo(Serial, globalTime);
   Clock.write(globalTime);
 }
-int * parseInts(unsigned char numIntsToFind, int startingIndex){
+int * parseInts(unsigned char numIntsToFind, int startingIndex, char* input){
   unsigned char intsFound = 0;
   unsigned char index = startingIndex;
   unsigned char oldIndex = index;
-  char currentChar = inputBuffer[startingIndex];
+  char currentChar = input[startingIndex];
 
   int* returnArr = (int*)malloc(4*sizeof(int)); //we know it will be max 3 numbers for the rgb, and one more for \0
   int returnIndex = 0;
 
   while(intsFound < numIntsToFind){
-    currentChar = inputBuffer[index];
+    currentChar = input[index];
 
     if(currentChar == ' ' || currentChar == '\0'){
       intsFound++;
@@ -252,7 +249,7 @@ int * parseInts(unsigned char numIntsToFind, int startingIndex){
       char concatenated[4];
       int n = 0;
       for(int i = oldIndex; i <= index-1; i++){
-        concatenated[n] = inputBuffer[i];
+        concatenated[n] = input[i];
         n++;
       }
       concatenated[n] = '\0';
@@ -484,21 +481,21 @@ void readTokenBuffer(byte tokenBuffer[])
   tokenBuffer[0] = '\0';
 }
 
-void processInput()
+void processInput(char* input)
 {
   //print inputted string
-  Serial.print(F("\nReceived Input: "));
+  Serial.print(F("\nArduino Received Input: "));
   Serial.println(inputBuffer);
 
   //split char array into tokens
   byte tokenBuffer[50];
   byte tokenIndex = 0;
   byte wordIndex = 0;
-  
+
   //parse out words from the input buffer
-  for(int i = 0; i<sizeof(inputBuffer)/sizeof(inputBuffer[0]); i++)
+  for(int i = 0; i<50; i++)
   {
-    char c = inputBuffer[i];
+    char c = input[i];
     
     //test if char is space, if it is we want to check for proper token
     // set up a nested loop where i is the index int of the stream and wordIndex points to the start of the current word
@@ -507,8 +504,8 @@ void processInput()
       for(int t = 0; t < sizeof(tokenTable)/sizeof(tokenTable[0]); t++)
       {
         // check if first letter, second letter, and wordlengths all match up
-        if(tokenTable[t].letterOne == inputBuffer[wordIndex] && 
-        tokenTable[t].letterTwo == inputBuffer[wordIndex+1] && 
+        if(tokenTable[t].letterOne == input[wordIndex] && 
+        tokenTable[t].letterTwo == input[wordIndex+1] && 
         tokenTable[t].wordLen == i - wordIndex){
           tokenBuffer[tokenIndex] = tokenTable[t].tokenNum;
           tokenIndex ++;
@@ -523,7 +520,7 @@ void processInput()
         byte index = 0;
         bool spaceFound = false;
         for(int num = 0; num < 50; num ++){
-          char currentChar = inputBuffer[wordIndex + num];
+          char currentChar = input[wordIndex + num];
           if(currentChar == '\0' || (currentChar == ' ' && spaceFound)){
             intAsArr[index] = '\0';
             break;
@@ -549,7 +546,7 @@ void processInput()
       }
       //IF TOKEN == ADD, Send next two unsigned chars as tokens
       else if(tokenBuffer[tokenIndex-1] == t_ADD){
-        int* parsed = parseInts(2, wordIndex);
+        int* parsed = parseInts(2, wordIndex, input);
 
         tokenBuffer[tokenIndex] = parsed[0];
         tokenIndex++;
@@ -560,7 +557,7 @@ void processInput()
       }
       //IF TOKEN == RGB take next three unsigned chars as tokens
       else if(tokenBuffer[tokenIndex-1] == t_RGB){
-        int* parsed = parseInts(3, wordIndex);
+        int* parsed = parseInts(3, wordIndex, input);
         tokenBuffer[tokenIndex] = parsed[0];
         tokenIndex++;
         tokenBuffer[tokenIndex] = parsed[1];
@@ -571,7 +568,7 @@ void processInput()
         free(parsed);
       }
       else if(tokenBuffer[tokenIndex-1] == t_RGBSET){
-        int* parsed = parseInts(1, wordIndex);
+        int* parsed = parseInts(1, wordIndex, input);
         tokenBuffer[tokenIndex] = parsed[0];
         tokenIndex++;
 
@@ -579,7 +576,7 @@ void processInput()
       }
       else if(tokenBuffer[tokenIndex-1] == t_CLOCK){
         //day month year hour minute second
-        int* parsed = parseInts(6, wordIndex);
+        int* parsed = parseInts(6, wordIndex, input);
         tokenBuffer[tokenIndex] = parsed[0];
         tokenBuffer[tokenIndex] = parsed[1];
         tokenBuffer[tokenIndex] = parsed[2];
@@ -594,7 +591,7 @@ void processInput()
       //if the char is terminator end the sequence
       if(c == '\0'){
         bufferIndex = 0;
-        inputBuffer[bufferIndex] = '\0';
+        input[bufferIndex] = '\0';
         break;
       }
     }
@@ -629,57 +626,85 @@ void clearTerminal(){
 }
 void TempThresholdCheck()
 {
-  byte f = (nowTemp * 1.8) + 32;
+  float liveTemp = 0;
+  float liveHumid = 0;
+  int err = SimpleDHTErrSuccess;
+  if ((err = dht22.read2(&liveTemp, &liveHumid, NULL)) != SimpleDHTErrSuccess) {
+    return;
+  }
+  byte f = (liveTemp * 1.8) + 32;
   if(f<=60){
-    //Serial.println("Major Under - purple");
+    //Major Under - Purple;
     leds[1].setRGB(0,10,10);
     
     if(alarmState != 1){
-      Serial.println("temperature changed!");
+      char aString[] = {'A','L','A','R','M',' ','M','A','J','O','R',' ','U','N','D','E','R','\0'};
+      sendUDP(aString);
     }
     alarmState = 1;
   }
   else if(f<=70){
-    //Serial.println("Minor Under - blue");
+    //Minor Under - Blue;
     leds[1].setRGB(0,0,10);  
     
     if(alarmState != 2){
-      Serial.println("temperature changed!");
+      char aString[] = {'A','L','A','R','M',' ','M','I','N','O','R',' ','U','N','D','E','R','\0'};
+      sendUDP(aString);
     }  
     alarmState = 2;
   }
   else if(f<=80){
-    //Serial.println("Comfortable - green");
+    // Comfortable - Green;
     leds[1].setRGB(10,0,0);   
 
     if(alarmState != 3){
-      Serial.println("temperature changed!");
+      char aString[] = {'A','L','A','R','M',' ','G','O','O','D','\0'};
+      sendUDP(aString);
     }
     alarmState = 3;
   }
   else if(f<=90){
-    //Serial.println("Minor Over - orange");
+    //Minor Over - Orange
     leds[1].setRGB(5,15,0);  
 
     if(alarmState != 4){
-      Serial.println("temperature changed!");
+      char aString[] = {'A','L','A','R','M',' ','M','I','N','O','R',' ','O','V','E','R','\0'};
+      sendUDP(aString);
     }
     alarmState = 4;
   }
-  else if(f>=90){
-    //Serial.println("Major Over - red");
+  else if(f>90){
+    //Major Over - red;
     leds[1].setRGB(0,10,0);
 
     if(alarmState != 5){
-      Serial.println("temperature changed!");
+      char aString[] = {'A','L','A','R','M',' ','M','A','J','O','R',' ','O','V','E','R','\0'};
+      sendUDP(aString);
     }
     alarmState = 5;
   }
 
   FastLED.show();
 }
+
+void RecieveUDP(){
+  int packetSize = Udp.parsePacket();
+  if (packetSize) {
+    // read the packet into packetBuffer
+    Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);
+    Serial.print(F("\nCommand from UDP: "));
+    Serial.println(packetBuffer);
+    processInput(packetBuffer);
+    for(byte i = 0; i < 31; i++){     //reset the input array for the next command
+        packetBuffer[i] = 0x00;
+      }
+
+    // send a reply to the IP address and port that we set
+    sendUDP("Complete");
+  }
+}
 void sendUDP(char* packet){
-    Udp.beginPacket(sendTo, 49351);
+    Udp.beginPacket(sendTo, 53782);
     Udp.write(packet);
     Udp.endPacket();
 }
@@ -713,7 +738,7 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
   //NETWORK
-
+  RecieveUDP();
   //BLINKING LIGHTS
   blinkD13(currentMillis,&lights[0]);
   blinkLED(currentMillis, &lights[1]);
@@ -731,7 +756,7 @@ void loop() {
     }
     // check for enter key press
     else if(incomingChar == '\r'){
-      processInput();
+      processInput(inputBuffer);
     }else{
       //make sure we have not exceeded size of inputbuffer
       if(bufferIndex < 50 -1){
