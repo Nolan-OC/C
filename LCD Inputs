@@ -1,0 +1,1050 @@
+#include <NButton.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+#include <Ethernet.h>
+#include <EthernetUdp.h>
+#include <DS3231_Simple.h>
+#include <SimpleDHT.h>
+#include <FastLED.h>
+#include <EEPROM.h>
+
+//TOKENS
+#define t_D13 1
+#define t_LED 2
+#define t_SET 3
+#define t_STATUS 4
+#define t_VERSION 5
+#define t_HELP 6
+#define t_ON 7
+#define t_OFF 8
+#define t_BLINK 9
+#define t_GREEN 10
+#define t_RED 11
+#define t_NUM 12
+#define t_LEDS 13
+#define t_ADD 14
+#define t_READ 15
+#define t_CURRENT 16
+#define t_SAVED 17
+#define t_HIGHLOW 18
+#define t_TEMP 19
+#define t_RGB 20
+#define t_RGBSET 21
+#define t_CLOCK 22
+#define t_EOL 255
+
+//Menu Settings
+byte thresholds[] = {60, 70, 80, 90};
+//BUTTONS
+NButton nButton(A0);
+byte lastButton;
+//LCD SCREEN
+LiquidCrystal_I2C lcd(0x27,20,4);
+//LCD MENU
+bool selectOn = false;
+byte menuStringX = 0;
+byte menuX, menuY = 0;
+char menu[4][6][16];
+byte packetHistIndex = 1;
+byte tempHistIndex = 1;
+
+//NETWORK
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+IPAddress ip(192, 168, 16, 181);       //arduino ip
+byte subnet[] = {255,255,255,0};
+byte gateway[] = {192,168,10,5};
+byte sendTo[] = {192, 168, 16, 180};   //computer ip
+unsigned int localPort = 8888;   
+EthernetUDP Udp; 
+char packetBuffer[UDP_TX_PACKET_MAX_SIZE];
+
+//EEPROM
+unsigned char eeAddress = 17;
+
+struct EEPROMEntry{
+  DateTime timeStamp;
+  int temperature;
+  int humidity;
+};
+
+//INPUT STREAM
+char inputBuffer[50];
+int bufferIndex = 0;
+
+//BLINK Counters
+int blinkInterval = 500;
+int blinkIntervalRGB = 1000;
+unsigned long previousMilSecRGB = 0;
+unsigned long previousMilSecLED = 0;
+unsigned long previousMilSecTEMP = 0;
+unsigned long previousMilSecLCD = 0;
+
+//CLOCK
+DS3231_Simple Clock;
+DateTime globalTime;
+unsigned char f_secondMarker;
+unsigned char ft_minuteMarker;
+
+//TEMPERATURE & HUMIDITY
+unsigned char alarmState;
+#define pinDHT22 2
+SimpleDHT22 dht22(pinDHT22);
+byte nowTemp;
+byte nowHumid;
+byte highTemp;
+byte lowTemp;
+
+//RGB LED
+#define RGBPIN 3
+#define NUM_LEDS 4
+CRGB leds[NUM_LEDS];
+bool rgbOn = false;
+bool rgbBlink = false;
+unsigned char LEDr, LEDg, LEDb;
+
+struct Light{
+  byte pinNum;
+  bool isOn;
+  bool isBlink;
+};
+struct Light lights[2] = {
+  {13, false, false}, // built in
+  {6, false, false}, // LED is set to 6-red by default green would be 7
+};
+struct TokenEntry{
+  char letterOne;
+  char letterTwo;
+  byte wordLen;
+  byte tokenNum;
+};
+
+struct TokenEntry tokenTable[23] = {
+  {'D','1', 3, 1 },
+  {'L','E', 3, 2 },
+  {'S','E', 3, 3 },
+  {'S','T', 6, 4 },
+  {'V','E', 7, 5 },
+  {'H','E', 4, 6 },
+  {'O','N', 2, 7 },
+  {'O','F', 3, 8 },
+  {'B','L', 5, 9 },
+  {'G','R', 5, 10 },
+  {'R','E', 3, 11 },
+  {'N','U', 3, 12 },
+  {'L','E', 4, 13 },
+  {'A','D', 3, 14 },
+  {'R','E', 4, 15 },
+  {'C','U', 7, 16 },
+  {'S','A', 5, 17 },
+  {'H','I', 7, 18 },
+  {'T','E', 4, 19 },
+  {'R','G', 3, 20 },
+  {'R','G', 6, 21 },
+  {'C','L', 5, 22 },
+  {'E','O', 3, 255 },
+};
+void setIP(){
+  //parses out bytes directly from menu string
+  byte* parsed = parseBytes(4, menu[3][1]);
+  ip = parsed;
+  EEPROM.put(1,parsed[0]); EEPROM.put(2,parsed[1]); EEPROM.put(3,parsed[2]); EEPROM.put(4,parsed[3]);
+  free(parsed);
+
+}
+void setSubnet(){
+  //parses out bytes directly from menu string
+  byte* parsed = parseBytes(4, menu[3][2]);
+  EEPROM.put(5,parsed[0]); EEPROM.put(6,parsed[1]); EEPROM.put(7,parsed[2]); EEPROM.put(8,parsed[3]);
+  free(parsed);
+
+}
+void setGateway(){
+  //parses out bytes directly from menu string
+  byte* parsed = parseBytes(4, menu[3][3]);
+  EEPROM.put(9,parsed[0]); EEPROM.put(10,parsed[1]); EEPROM.put(11,parsed[2]); EEPROM.put(12,parsed[3]);
+  free(parsed);
+
+}
+void setAlarmThresholds(){
+  //set value for majorunder<int<minorunder<int<good<int<minorover<
+  byte* parsed = parseBytes(4, menu[3][4]);
+  thresholds[0] = parsed[0]; thresholds[1] = parsed[1]; thresholds[2] = parsed[2]; thresholds[3] = parsed[3];
+  EEPROM.put(13,parsed[0]); EEPROM.put(14,parsed[1]); EEPROM.put(15,parsed[2]); EEPROM.put(16,parsed[3]);
+  free(parsed);
+}
+
+void blinkLED(unsigned long currentMilSec, struct Light* ptr ){
+  //toggle led while blink is true
+  if(currentMilSec - previousMilSecLED >= blinkInterval){
+    previousMilSecLED = currentMilSec;
+    if((*ptr).isBlink){
+      toggleLight(ptr);
+    }
+  }
+}
+void blinkRGB(unsigned long currentMilSec){
+    if(currentMilSec - previousMilSecRGB >= blinkInterval){
+      previousMilSecRGB = currentMilSec;
+
+      if(rgbBlink){
+        if(rgbOn){
+          leds[3].setRGB(0,0,0);
+          rgbOn = false;
+        }
+        else{
+          leds[3].setRGB(LEDg,LEDr,LEDb);
+          rgbOn = true;
+        }
+      }
+      FastLED.show();
+  }
+}
+//custom atoi
+long myAtoi(char* str){
+  long result = 0L;
+  int sign = 1;
+  int i = 0;
+
+  //if negative sign skip this index
+  if(str[0] == '-') {
+    sign = -1;
+    i++;
+  }
+  for(i; str[i] != '\0'; ++i){
+    result = result * 10 + str[i] - '0';
+  }
+  return sign * result;
+}
+void storeCurrentTempHumid(){
+    byte temperature = 0;
+    byte humidity = 0;
+    int err = SimpleDHTErrSuccess;
+    if ((err = dht22.read(&temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
+      return;
+    }
+    
+    if(temperature > highTemp){highTemp = temperature;}
+    if(temperature < lowTemp){lowTemp = temperature;}
+    
+    nowTemp = temperature;
+    nowHumid = humidity;
+}
+void logTempHumidity(){
+  //Logs Timestamp, temperature and humidity every 15 minutes struct is 11 bytes
+
+  // construct time temp humidity data
+  struct EEPROMEntry entry;
+  entry.timeStamp = Clock.read();
+  entry.temperature = (int)nowTemp;
+  entry.humidity = (int)nowHumid;
+
+  //Resets the history starting at address 1
+  Serial.print(F("saving eeprom entry to "));Serial.println(eeAddress);
+  EEPROM.put(eeAddress, entry);
+  eeAddress += sizeof(entry);
+  if(eeAddress <17){eeAddress = 17;} //just in case eeprom wraps around we can protect the other data
+  
+  EEPROM.put(0,eeAddress);  //save the last known eepromMaxAddress
+}
+void readTempHumidity(){
+  struct EEPROMEntry eeVal;
+  byte eepromMaxAddress = 0;
+  eepromMaxAddress = EEPROM.get(0,eepromMaxAddress);
+  for(int i = 17; i<=eepromMaxAddress;i+=11){  //start iterating through eeprom at address 17 by size of entry
+    EEPROM.get(i, eeVal);
+    Serial.print(i);Serial.println(":");
+    Clock.printTo(Serial, eeVal.timeStamp);
+    Serial.print(F("   Humidity "));  Serial.print(eeVal.humidity);
+    Serial.print(F("%   Temperature: ")); Serial.print(eeVal.temperature);Serial.print(F("C "));
+    Serial.print((eeVal.temperature * 1.8) + 32); Serial.println(F("F"));
+
+    //also load this to lcd menu
+    char tempString[16];  // create entry and pointer to entry
+    int temp = (eeVal.temperature*1.8) +32;
+    sprintf(tempString, "%d-%d %dF %d%%", eeVal.timeStamp.Hour,eeVal.timeStamp.Minute, temp, eeVal.humidity);
+    strncpy(menu[1][tempHistIndex], tempString, 16);
+    tempHistIndex++;
+    if(tempHistIndex>4){tempHistIndex = 1;}
+    
+  }
+}
+void setupClock(int day, int month, int year, int hour, int minute, int second)
+{
+  globalTime = Clock.read();
+  // Load it with the date and time you want to set, for example
+  globalTime.Day    = day;
+  globalTime.Month  = month;
+  globalTime.Year   = year; 
+  globalTime.Hour   = hour;
+  globalTime.Minute = minute;
+  globalTime.Second = second;
+  
+  // Then write it to the clock
+  Clock.printTo(Serial, globalTime);
+  Clock.write(globalTime);
+}
+byte * parseBytes(unsigned char numIntsToFind, char* input){
+  unsigned char intsFound = 0;
+  unsigned char index = 0;
+  unsigned char oldIndex = index;
+  char currentChar = input[index];
+
+  byte* returnArr = (byte*)malloc(5*sizeof(int)); //we know it will be max 4 numbers for the ip, and one more for \0
+  byte returnIndex = 0;
+
+  while(intsFound < numIntsToFind){
+    currentChar = input[index];
+
+    if(currentChar == '.' || currentChar == '<' || currentChar == '\0'){
+      intsFound++;
+      //take nums from oldindex to new index, concatinate and add to return arr
+
+      char concatenated[4];
+      int n = 0;
+      for(int i = oldIndex; i <= index-1; i++){
+        concatenated[n] = input[i];
+        n++;
+      }
+      concatenated[n] = '\0';
+      //Add resulting int to array
+      int result = myAtoi(concatenated);
+      returnArr[returnIndex] = result;
+      returnIndex++;
+      
+      oldIndex = index+1; //+1 to remove the space
+      if(currentChar == '\0'){
+        returnArr[returnIndex] = '\0';
+        return returnArr;
+      }
+    }
+    index++;
+  }
+}
+int * parseInts(unsigned char numIntsToFind, int startingIndex, char* input){
+  unsigned char intsFound = 0;
+  unsigned char index = startingIndex;
+  unsigned char oldIndex = index;
+  char currentChar = input[startingIndex];
+
+  int* returnArr = (int*)malloc(4*sizeof(int)); //we know it will be max 3 numbers for the rgb, and one more for \0
+  int returnIndex = 0;
+
+  while(intsFound < numIntsToFind){
+    currentChar = input[index];
+
+    if(currentChar == ' ' || currentChar == '\0'){
+      intsFound++;
+      //take nums from oldindex to new index, concatinate and add to return arr
+
+      char concatenated[4];
+      int n = 0;
+      for(int i = oldIndex; i <= index-1; i++){
+        concatenated[n] = input[i];
+        n++;
+      }
+      concatenated[n] = '\0';
+      //Add resulting int to array
+      int result = myAtoi(concatenated);
+      returnArr[returnIndex] = result;
+      returnIndex++;
+      
+      oldIndex = index+1; //+1 to remove the space
+      if(currentChar == '\0'){
+        returnArr[returnIndex] = '\0';
+        return returnArr;
+      }
+    }
+    index++;
+  }
+}
+//change an LED's status
+void manageLED(struct Light* ptr, bool on, bool isBlink){
+  (*ptr).isOn = on;
+  (*ptr).isBlink = isBlink;
+  digitalWrite((*ptr).pinNum, on ? true : false);
+}
+
+//toggle an LED on or off depending on its current state
+void toggleLight(struct Light* ptr){
+  switch((*ptr).isOn){
+    case true:
+      manageLED(ptr, false, true);
+      digitalWrite((*ptr).pinNum, LOW);
+      break;
+    case false:
+      digitalWrite((*ptr).pinNum,HIGH);
+      manageLED(ptr, true, true);
+      break;
+  }
+}
+//print the status of all LEDS
+void statusLED(){
+  Serial.println(F("\n-----LED Status-----"));
+  for(int i = 0; i < 2; i++){
+    //pin num
+    Serial.println(lights[i].pinNum == 13 ? F("\nDigital Pin:") : F("\nLED:"));
+    Serial.print(F("Pin: "));
+    Serial.println(lights[i].pinNum);
+    //on off
+    Serial.print(F("Is On? "));
+    Serial.println(lights[i].isOn ? F("Yes") : F("No"));
+    //blinking?
+    Serial.print(F("Is Blinking? "));
+    Serial.println(lights[i].isBlink ? "Yes" : "No");
+    }
+    Serial.print(F("\nCurrent BLINK interval set to "));
+    Serial.println(blinkInterval);
+    Serial.println(F("------------------\n"));
+}
+
+void printHelp(){
+  Serial.println(F("\n-----Helpful Commands-----"));
+  Serial.println(F("LED - followed by ON OFF GREEN RED or BLINK"));
+  Serial.println(F("VERSION - will print the current version"));
+  Serial.println(F("STATUS followed by LEDS - will print the status of all LEDs"));
+  Serial.println(F("READ followed by CURRENT SAVED or HIGHLOW followed by TEMP will print out temperature/humidity info"));
+}
+
+void ethernetCheck(){
+  if (Ethernet.linkStatus() == LinkOFF) {
+    leds[2].setRGB(0, 10, 0); //set led number 3 to red for no network
+  }
+  else{
+    leds[2].setRGB(10, 0, 0); //set led number 3 to green for good network
+  }
+  FastLED.show();
+
+}
+void networkPowerCheck(){
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    leds[0].setRGB(0, 10, 0); //set led number 1 to red for no network
+  }
+  else if (Ethernet.hardwareStatus() == EthernetW5100) {
+    leds[0].setRGB(10, 0, 0); //set led number 3 to red for no network
+
+  }
+  FastLED.show();
+
+}
+void readTokenBuffer(byte tokenBuffer[])
+{
+  switch(tokenBuffer[0]){
+    case t_D13:
+      break;
+    case t_LED:
+      switch(tokenBuffer[1]){
+        case t_GREEN:
+          lights[1].pinNum = 7;
+          digitalWrite(6,LOW);
+          manageLED(&lights[1],lights[1].isOn,lights[1].isBlink);
+          break;
+        case t_RED:
+          lights[1].pinNum = 6;
+          digitalWrite(7,LOW);
+          manageLED(&lights[1],lights[1].isOn,lights[1].isBlink);
+          break;
+        case t_ON:
+          manageLED(&lights[1],true,lights[1].isBlink);
+          break;
+        case t_OFF:
+          manageLED(&lights[1],false,false);
+          break;
+        case t_BLINK:
+          manageLED(&lights[1],lights[1].isOn,true);
+          break;
+        
+      }
+      break;
+    case t_SET:
+      switch(tokenBuffer[1]){
+        case t_BLINK:
+          //reconstruct integer sent by token buffer
+          int rec = (int)(((unsigned)tokenBuffer[2] << 8) | tokenBuffer[3] );
+          blinkInterval = rec;
+          Serial.print(F("Setting Blink Interval To: ")); Serial.println(rec);
+          break;
+      }
+      break;
+    case t_STATUS:
+      switch(tokenBuffer[1]){
+        case t_LEDS:
+          statusLED();
+          break;
+      }
+      break;
+    case t_READ:
+      switch(tokenBuffer[1]){
+        case t_CURRENT:
+          switch(tokenBuffer[2]){
+            case t_TEMP:
+              Serial.print(F("Current Temperature: ")); Serial.print(nowTemp); Serial.print("C ");  
+              Serial.print((nowTemp * 1.8) + 32); Serial.print(F("F Current Humidity: ")); 
+              Serial.print(nowHumid); Serial.println(F("%"));
+              break;
+            case t_CLOCK:
+              Serial.print(F("\n")); Clock.printTo(Serial, globalTime);
+          }
+          break;
+        case t_SAVED:
+          switch(tokenBuffer[2]){
+            case t_TEMP:
+            readTempHumidity();
+            break;
+          }
+          break;
+        case t_HIGHLOW:
+        switch(tokenBuffer[2]){
+          case t_TEMP:
+            Serial.println(F("PRINTING OUT HIGHEST LOWEST TEMPS"));
+            Serial.print(F("Highest Temperature: ")); Serial.print(highTemp); Serial.print("C ");  
+            Serial.print((highTemp * 1.8) + 32); Serial.print(F("F Current Humidity: ")); 
+            Serial.print(F("Lowest Temp: ")); Serial.println(lowTemp);
+            break;
+        }
+        break;
+      }
+      break;
+    case t_VERSION:
+      Serial.println(F("Version: 2.0"));
+      break;
+    case t_HELP:
+      printHelp();
+      break;
+    case t_ADD:
+      Serial.print(F("SUM: ")); Serial.println(tokenBuffer[1] + tokenBuffer[2]);
+      break;
+    case t_RGB:
+      Serial.print(F("NEW RGB VALUES: ")); Serial.print(tokenBuffer[1]); Serial.print(F(" "));
+      Serial.print(tokenBuffer[2]); Serial.print(F(" "));Serial.println(tokenBuffer[3]);
+      LEDr = tokenBuffer[1]; LEDg = tokenBuffer[2]; LEDb = tokenBuffer[3];
+      leds[3].setRGB(LEDg,LEDr,LEDb);
+      FastLED.show();
+      break;
+    case t_RGBSET:
+      blinkIntervalRGB = tokenBuffer[1];
+      
+      if(rgbBlink == false){
+          rgbBlink = true;
+      }
+      else{
+        rgbBlink = false;
+      }
+      break;
+    case t_CLOCK:
+      Serial.print(F("setting clock..."));
+      //day month year hour minute second
+      setupClock(tokenBuffer[1],tokenBuffer[2],tokenBuffer[3],tokenBuffer[4],tokenBuffer[5],tokenBuffer[6]);
+
+  }
+
+  //clear token buffer
+  tokenBuffer[0] = '\0';
+}
+
+void processInput(char* input)
+{
+  //print inputted string
+  Serial.print(F("\nArduino Received Input: "));
+  Serial.println(inputBuffer);
+
+  //split char array into tokens
+  byte tokenBuffer[50];
+  byte tokenIndex = 0;
+  byte wordIndex = 0;
+
+  //parse out words from the input buffer
+  for(int i = 0; i<50; i++)
+  {
+    char c = input[i];
+    
+    //test if char is space, if it is we want to check for proper token
+    // set up a nested loop where i is the index int of the stream and wordIndex points to the start of the current word
+    if(c == 32 || c == '\0'){
+      // if current word is token add to token buffer
+      for(int t = 0; t < sizeof(tokenTable)/sizeof(tokenTable[0]); t++)
+      {
+        // check if first letter, second letter, and wordlengths all match up
+        if(tokenTable[t].letterOne == input[wordIndex] && 
+        tokenTable[t].letterTwo == input[wordIndex+1] && 
+        tokenTable[t].wordLen == i - wordIndex){
+          tokenBuffer[tokenIndex] = tokenTable[t].tokenNum;
+          tokenIndex ++;
+          break;
+        }
+      }
+      wordIndex = i+1;
+
+      // IF TOKENS == SET & BLINK, Get a substring of the next word which should be an integer indicating blink frequency
+      if(tokenBuffer[tokenIndex] == t_BLINK && tokenBuffer[tokenIndex-1] == t_SET){
+        char intAsArr[50];
+        byte index = 0;
+        bool spaceFound = false;
+        for(int num = 0; num < 50; num ++){
+          char currentChar = input[wordIndex + num];
+          if(currentChar == '\0' || (currentChar == ' ' && spaceFound)){
+            intAsArr[index] = '\0';
+            break;
+          }
+          else if (currentChar == ' ' && !spaceFound){
+            spaceFound = true;
+          }
+          else if (spaceFound){
+            intAsArr[index] = currentChar;
+            index ++;
+          }
+      }
+      intAsArr[index] = '\0';
+      int result = myAtoi(intAsArr);
+      byte high = (result >> 8) & 0xFF;
+      byte low = result & 0xFF;
+      tokenIndex++;
+      tokenBuffer[tokenIndex] = high;
+      tokenIndex++;
+      tokenBuffer[tokenIndex] = low;
+      tokenIndex++;
+      int reassemble = (high<<8) | low;
+      }
+      //IF TOKEN == ADD, Send next two unsigned chars as tokens
+      else if(tokenBuffer[tokenIndex-1] == t_ADD){
+        int* parsed = parseInts(2, wordIndex, input);
+
+        tokenBuffer[tokenIndex] = parsed[0];
+        tokenIndex++;
+        tokenBuffer[tokenIndex] = parsed[1];
+        tokenIndex++;
+
+        free(parsed);
+      }
+      //IF TOKEN == RGB take next three unsigned chars as tokens
+      else if(tokenBuffer[tokenIndex-1] == t_RGB){
+        int* parsed = parseInts(3, wordIndex, input);
+        tokenBuffer[tokenIndex] = parsed[0];
+        tokenIndex++;
+        tokenBuffer[tokenIndex] = parsed[1];
+        tokenIndex++;
+        tokenBuffer[tokenIndex] = parsed[2];
+        tokenIndex++;
+        
+        free(parsed);
+      }
+      else if(tokenBuffer[tokenIndex-1] == t_RGBSET){
+        int* parsed = parseInts(1, wordIndex, input);
+        tokenBuffer[tokenIndex] = parsed[0];
+        tokenIndex++;
+
+        free(parsed);
+      }
+      else if(tokenBuffer[tokenIndex-1] == t_CLOCK){
+        //day month year hour minute second
+        int* parsed = parseInts(6, wordIndex, input);
+        tokenBuffer[tokenIndex] = parsed[0];
+        tokenBuffer[tokenIndex] = parsed[1];
+        tokenBuffer[tokenIndex] = parsed[2];
+        tokenBuffer[tokenIndex] = parsed[3];
+        tokenBuffer[tokenIndex] = parsed[4];
+        tokenBuffer[tokenIndex] = parsed[5];
+        tokenIndex++;
+
+        free(parsed);
+      }
+
+      //if the char is terminator end the sequence
+      if(c == '\0'){
+        bufferIndex = 0;
+        input[bufferIndex] = '\0';
+        break;
+      }
+    }
+  }
+  //end and print the token buffer
+  tokenBuffer[tokenIndex] = '\0';
+  Serial.print(F("Token Buffer: "));
+  for(int i = 0; i < sizeof(tokenBuffer)/sizeof(tokenBuffer[0]); i++){
+    if(tokenBuffer[i] == '\0')
+    {
+      //end of stream break loop
+      break;
+    }
+    Serial.print(F("-"));
+    Serial.print(tokenBuffer[i]);
+
+  }
+  Serial.println();
+  
+  readTokenBuffer(tokenBuffer);
+  //reset input buffer
+  bufferIndex = 0;
+  inputBuffer[bufferIndex] = '\0';
+}
+
+void clearTerminal(){
+  //clear the terminal
+  Serial.write(27);     //escape
+  Serial.print("[2J");  //clear screan
+  Serial.write(27);     //escape again
+  Serial.write("[H");   //cursor to home
+}
+void TempThresholdCheck(unsigned long currentMilSec)
+{
+  if(currentMilSec - previousMilSecTEMP >= 100){
+    previousMilSecTEMP = currentMilSec;
+    float liveTemp = 0;
+    float liveHumid = 0;
+    int err = SimpleDHTErrSuccess;
+    if ((err = dht22.read2(&liveTemp, &liveHumid, NULL)) != SimpleDHTErrSuccess) {
+      return;
+    }
+    byte f = (liveTemp * 1.8) + 32;
+    byte h = liveHumid;    
+    if(f<=thresholds[0]){
+      //Major Under - Purple;
+      leds[1].setRGB(0,10,10);
+      
+      if(alarmState != 1){
+        char aString[] = "ALARM Major Under";
+        sendUDP(aString);
+      }
+      alarmState = 1;
+    }
+    else if(f<=thresholds[1]){
+      //Minor Under - Blue;
+      leds[1].setRGB(0,0,10);
+      
+      if(alarmState != 2){
+        char aString[] = "ALARM Minor Under";
+        sendUDP(aString);
+      }  
+      alarmState = 2;
+    }
+    else if(f<=thresholds[2]){
+      // Comfortable - Green;
+      leds[1].setRGB(10,0,0);   
+  
+      if(alarmState != 3){
+        char aString[] = "ALARM Good";
+        sendUDP(aString);
+      }
+      alarmState = 3;
+    }
+    else if(f<=thresholds[3]){
+      //Minor Over - Orange
+      leds[1].setRGB(5,15,0);
+  
+      if(alarmState != 4){
+        char aString[] = "ALARM Minor Over";
+        sendUDP(aString);
+      }
+      alarmState = 4;
+    }
+    else if(f>thresholds[3]){
+      //Major Over - red;
+      leds[1].setRGB(0,10,0);
+  
+      if(alarmState != 5){
+        char aString[] = "ALARM Major Over";
+        sendUDP(aString);
+      }
+      alarmState = 5;
+    }
+
+    FastLED.show();
+
+    char tempString[10];
+    sprintf(tempString, "%dF %d%%", f,h);
+
+    strncpy(menu[0][1], tempString, 16);
+    
+  }
+}
+
+void receiveUDP(){
+  int packetSize = Udp.parsePacket();
+  if (packetSize) {
+    // read the packet into packetBuffer
+    Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);
+    Serial.print(F("\nCommand from UDP: "));
+    Serial.println(packetBuffer);
+    
+    //save packet to lcd menu
+    strncpy(menu[2][packetHistIndex], packetBuffer, 16);
+    packetHistIndex++;
+    if(packetHistIndex>4){packetHistIndex = 1;}    
+    
+    //process input
+    processInput(packetBuffer);
+    for(byte i = 0; i < 31; i++){     //reset the input array for the next command
+        packetBuffer[i] = 0x00;
+      }
+
+    // send a reply to the IP address and port that we set
+    sendUDP("received");
+   
+  }
+}
+void sendUDP(char* packet){
+    Udp.beginPacket(sendTo, 41108);
+    Udp.write(packet);
+    Udp.endPacket();
+
+    //save packet to lcd menu
+    strncpy(menu[2][packetHistIndex], packet, 16);
+    packetHistIndex++;
+    if(packetHistIndex>4){packetHistIndex = 1;}
+}
+void stringNav(byte input){
+    char c; //current character
+    switch(input){
+      case 1: //NO INPUT
+        //signal from lack of input, needed to reset last button press
+        return;
+      case 2: //SELECT
+        selectOn = false;
+        lcd.setCursor(0,0);
+        lcd.cursor_off();
+        lcd.blink_off();
+        Serial.println("saving changes");
+        setIP();
+        setSubnet();
+        setGateway();
+        setAlarmThresholds();
+        Serial.println("select set off");
+        break;
+      case 3: //RIGHT
+        if(menuStringX<15){
+          //move cursor right
+          menuStringX++;
+          lcd.setCursor(menuStringX,0);
+          c = menu[menuX][menuY][menuStringX];
+        }
+        break;
+      case 4: //DOWN
+        c = menu[menuX][menuY][menuStringX];
+        if (c > '0' && c <= '9') {
+          // Decrease the character value (assuming it's a digit)
+          c--;
+          // Update the character in the menu string
+          menu[menuX][menuY][menuStringX] = c;
+          // Update the display if necessary
+          lcd.setCursor(menuStringX, 0);
+          lcd.write(c);
+        }
+        break;
+      case 5: //UP
+        c = menu[menuX][menuY][menuStringX];
+        if (c >= '0' && c <= '9') {
+          c++;
+          // update character on string and lcd
+          menu[menuX][menuY][menuStringX] = c;
+          lcd.setCursor(menuStringX, 0);
+          lcd.write(c);
+        }
+        break;
+      case 6: //LEFT
+        if(menuStringX>0){
+          //move cursor
+          menuStringX--;
+          lcd.setCursor(menuStringX,0);
+          c = menu[menuX][menuY][menuStringX];
+        }
+        break;
+    }
+    Serial.println(c);
+}
+void menuNav(byte input){
+    switch(input){
+      case 1:
+        //signal from lack of input, needed to reset last button press
+        return;
+      case 2:
+        //select - toggle character move
+        if(menuX == 3 && menuY == 5){   //if on the delete history button, do that, else enter character select mode
+          Serial.println(F("Deleting Temp History"));
+          for (int i = 17 ; i < EEPROM.length() ; i++) {
+            EEPROM.write(i, 0);
+          }
+          for (int i = 1; i<6; i++){  strncpy(menu[1][i], " ", 16);}
+          eeAddress = 17;
+          
+        }else{
+          lcd.cursor_on();
+          lcd.blink_on();
+          selectOn = true;
+        }
+        break;
+      case 3: //RIGHT
+        menuX++;  
+        break;
+      case 4: //DOWN
+        menuY++;
+        break;
+      case 5: //UP
+        menuY--;
+        break;
+      case 6: //LEFT
+        menuX--;  
+        break;
+    }
+    //keep menu within bounds of array
+    if(menuX > 3){menuX = 3;}
+    else if(menuX < 0){menuX = 0;}
+    if(menuY < 0){menuY = 0;}
+    else if(menuY>5){menuY = 5;}
+    //
+    drawLCD(1000);
+    lcd.clear();
+    
+    Serial.print(menuX);Serial.print(F(":"));Serial.println(menuY);
+}
+void drawLCD(unsigned long currentMilSec){
+  if(currentMilSec - previousMilSecLCD >= 1000){
+    previousMilSecLCD = currentMilSec;
+    lcd.setCursor(0,0);
+    lcd.print(menu[menuX][menuY]);
+    if(menuY<6){
+      lcd.setCursor(0,1);
+      lcd.print(menu[menuX][menuY+1]);
+    }
+  }
+}
+void clearLCD()
+{
+  for(int i = 0; i<4; i++){
+    for(int x = 0; x<6; x++){
+      menu[i][x][0] = "                ";
+    }
+  }
+
+  strncpy(menu[0][0], "      Home      ", 16);
+  strncpy(menu[1][0], "  Temp History  ", 16);
+  strncpy(menu[2][0], " Packet History ", 16);
+  strncpy(menu[3][0], "    Settings    ", 16);
+  strncpy(menu[3][5], "  Delete Data   ", 16);
+}
+void loadTempData(){
+  
+}
+void setup() {
+  // set pins
+  inputBuffer[0] = '\0';
+  pinMode(7,OUTPUT); //Green LED pin
+  pinMode(6,OUTPUT); //Red LED pin
+  pinMode(LED_BUILTIN, OUTPUT); //Builtin D13 pin
+
+  //day month year hour minute second
+  FastLED.addLeds<WS2811, RGBPIN, RGB>(leds, NUM_LEDS);
+  Clock.begin();
+  Clock.setAlarm(DS3231_Simple::ALARM_EVERY_SECOND); 
+  Clock.setAlarm(DS3231_Simple::ALARM_EVERY_MINUTE);
+  
+  Serial.begin(9600);
+
+  //set original ip,subnet,gateway if eeprom storage is messed up 
+  //EEPROM.put(1,ip[0]); EEPROM.put(2,ip[1]); EEPROM.put(3,ip[2]); EEPROM.put(4,ip[3]);
+  //EEPROM.put(5,subnet[0]); EEPROM.put(6,subnet[1]); EEPROM.put(7,subnet[2]); EEPROM.put(8,subnet[3]);
+  //EEPROM.put(9,gateway[0]); EEPROM.put(10,gateway[1]); EEPROM.put(11,gateway[2]); EEPROM.put(12,gateway[3]);
+  //EEPROM.put(13,thresholds[0]);EEPROM.put(14,thresholds[1]);EEPROM.put(15,thresholds[2]);EEPROM.put(16,thresholds[3]);
+  //
+  //load ip subnet gateway from eeprom
+  ip[0] = EEPROM.read(1); ip[1] = EEPROM.read(2); ip[2] = EEPROM.read(3); ip[3] = EEPROM.read(4);
+  subnet[0] = EEPROM.read(5); subnet[1] = EEPROM.read(6); subnet[2] = EEPROM.read(7); subnet[3] = EEPROM.read(8);
+  gateway[0] = EEPROM.read(9); gateway[1] = EEPROM.read(10); gateway[2] = EEPROM.read(11); gateway[3] = EEPROM.read(12);
+  thresholds[0] = EEPROM.read(13); thresholds[1] = EEPROM.read(14); thresholds[2] = EEPROM.read(15); thresholds[3] = EEPROM.read(16);
+  Ethernet.begin(mac, ip);
+
+  
+  //wait for serial to start
+  while (!Serial) { ; }
+  //check for network connectivity and power
+  networkPowerCheck();
+  ethernetCheck();
+  Udp.begin(localPort); // start UDP
+
+  clearLCD();
+
+  //setup lcd
+  lcd.init();
+  lcd.clear();
+  lcd.backlight();
+
+  //load settings
+  char str[16];
+  sprintf(str, "%d.%d.%d.%d", ip[0],ip[1],ip[2],ip[3]);
+  strncpy(menu[3][1], str, 16);
+  sprintf(str, "%d.%d.%d.%d", subnet[0],subnet[1],subnet[2],subnet[3]);
+  strncpy(menu[3][2], str, 16);  
+  sprintf(str, "%d.%d.%d.%d", gateway[0],gateway[1],gateway[2],gateway[3]);
+  strncpy(menu[3][3], str, 16);
+  sprintf(str, "%d<%d<%d<%d", thresholds[0],thresholds[1],thresholds[2],thresholds[3]);
+  strncpy(menu[3][4], str, 16);
+  readTempHumidity();
+}
+void loop() {
+  unsigned long currentMilSec = millis();
+  //BUTTONS & MENU
+  byte state = nButton.getState();
+  if(state != lastButton){
+    lastButton = state;
+    if(selectOn){
+      stringNav(state);
+    }
+    else{
+      menuNav(state);
+    }
+  }
+  //NETWORK
+  receiveUDP();
+  
+  //Timed Checks
+  blinkLED(currentMilSec, &lights[1]);
+  blinkRGB(currentMilSec);
+  TempThresholdCheck(currentMilSec);
+  drawLCD(currentMilSec);
+
+  // TAKE INPUT FROM SERIAL
+  if(Serial.available()>0){
+    clearTerminal();
+    char incomingChar = Serial.read();
+    //check for backspace
+    if(incomingChar == 127 && bufferIndex > 0){
+      bufferIndex --;
+      inputBuffer[bufferIndex] = '\0';
+    }
+    // check for enter key press
+    else if(incomingChar == '\r'){
+      processInput(inputBuffer);
+    }else{
+      //make sure we have not exceeded size of inputbuffer
+      if(bufferIndex < 50 -1){
+        inputBuffer[bufferIndex] = incomingChar;
+        bufferIndex++;
+        inputBuffer[bufferIndex] = '\0';
+      }
+    }
+
+    Serial.print(F("\nInput: "));
+    Serial.println(inputBuffer);
+  }
+
+  //CHECK ALARMS TO LOG TIME, TEMP, HUMIDITY
+  uint8_t AlarmsFired = Clock.checkAlarms();
+  if(AlarmsFired & 1)
+  {
+    if(f_secondMarker%5 == 0)
+    {
+      //read current temperature and humidity into global variable
+      storeCurrentTempHumid();
+      f_secondMarker = 0;
+    }
+    f_secondMarker++;
+  }
+  if(AlarmsFired & 2)
+  {
+    if(ft_minuteMarker%1 == 0){
+      //store temp and humidity to eeprom
+      logTempHumidity();
+      ft_minuteMarker = 0;
+    }
+    ft_minuteMarker++;
+  }
+}
+//bitbucket = ATBBvJRRbjmQQ2k9E5X7M9n55yc2D61D54AC
