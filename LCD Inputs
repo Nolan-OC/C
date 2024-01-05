@@ -50,7 +50,7 @@ byte tempHistIndex = 1;
 
 //NETWORK
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress ip(192, 168, 16, 181);       //arduino ip
+IPAddress ip(192, 168, 16, 181);       //arduino ip actually loaded from eeprom but left here to remind of proper ip
 byte subnet[] = {255,255,255,0};
 byte gateway[] = {192,168,10,5};
 byte sendTo[] = {192, 168, 16, 180};   //computer ip
@@ -199,6 +199,15 @@ void blinkRGB(unsigned long currentMilSec){
       FastLED.show();
   }
 }
+void myStrncpy(char *destination, const char *source, size_t s){
+  size_t i;
+  for(i = 0; i < s && source[i] != '\0'; ++i){
+    destination[i] = source[i];
+  }
+  for(; i < s; ++i){
+    destination[i] = '\0';
+  }
+}
 //custom atoi
 long myAtoi(char* str){
   long result = 0L;
@@ -231,7 +240,6 @@ void storeCurrentTempHumid(){
 }
 void logTempHumidity(){
   //Logs Timestamp, temperature and humidity every 15 minutes struct is 11 bytes
-
   // construct time temp humidity data
   struct EEPROMEntry entry;
   entry.timeStamp = Clock.read();
@@ -252,7 +260,7 @@ void readTempHumidity(){
   eepromMaxAddress = EEPROM.get(0,eepromMaxAddress);
   for(int i = 17; i<=eepromMaxAddress;i+=11){  //start iterating through eeprom at address 17 by size of entry
     EEPROM.get(i, eeVal);
-    Serial.print(i);Serial.println(":");
+    Serial.print(i);Serial.println(F(":"));
     Clock.printTo(Serial, eeVal.timeStamp);
     Serial.print(F("   Humidity "));  Serial.print(eeVal.humidity);
     Serial.print(F("%   Temperature: ")); Serial.print(eeVal.temperature);Serial.print(F("C "));
@@ -262,9 +270,9 @@ void readTempHumidity(){
     char tempString[16];  // create entry and pointer to entry
     int temp = (eeVal.temperature*1.8) +32;
     sprintf(tempString, "%d-%d %dF %d%%", eeVal.timeStamp.Hour,eeVal.timeStamp.Minute, temp, eeVal.humidity);
-    strncpy(menu[1][tempHistIndex], tempString, 16);
+    myStrncpy(menu[1][tempHistIndex], tempString, 16);
     tempHistIndex++;
-    if(tempHistIndex>4){tempHistIndex = 1;}
+    if(tempHistIndex>5){tempHistIndex = 1;}
     
   }
 }
@@ -390,7 +398,7 @@ void statusLED(){
     Serial.println(lights[i].isOn ? F("Yes") : F("No"));
     //blinking?
     Serial.print(F("Is Blinking? "));
-    Serial.println(lights[i].isBlink ? "Yes" : "No");
+    Serial.println(lights[i].isBlink ? F("Yes") : F("No"));
     }
     Serial.print(F("\nCurrent BLINK interval set to "));
     Serial.println(blinkInterval);
@@ -477,7 +485,7 @@ void readTokenBuffer(byte tokenBuffer[])
         case t_CURRENT:
           switch(tokenBuffer[2]){
             case t_TEMP:
-              Serial.print(F("Current Temperature: ")); Serial.print(nowTemp); Serial.print("C ");  
+              Serial.print(F("Current Temperature: ")); Serial.print(nowTemp); Serial.print(F("C "));  
               Serial.print((nowTemp * 1.8) + 32); Serial.print(F("F Current Humidity: ")); 
               Serial.print(nowHumid); Serial.println(F("%"));
               break;
@@ -496,7 +504,7 @@ void readTokenBuffer(byte tokenBuffer[])
         switch(tokenBuffer[2]){
           case t_TEMP:
             Serial.println(F("PRINTING OUT HIGHEST LOWEST TEMPS"));
-            Serial.print(F("Highest Temperature: ")); Serial.print(highTemp); Serial.print("C ");  
+            Serial.print(F("Highest Temperature: ")); Serial.print(highTemp); Serial.print(F("C "));  
             Serial.print((highTemp * 1.8) + 32); Serial.print(F("F Current Humidity: ")); 
             Serial.print(F("Lowest Temp: ")); Serial.println(lowTemp);
             break;
@@ -752,7 +760,7 @@ void TempThresholdCheck(unsigned long currentMilSec)
     char tempString[10];
     sprintf(tempString, "%dF %d%%", f,h);
 
-    strncpy(menu[0][1], tempString, 16);
+    myStrncpy(menu[0][1], tempString, 16);
     
   }
 }
@@ -766,7 +774,7 @@ void receiveUDP(){
     Serial.println(packetBuffer);
     
     //save packet to lcd menu
-    strncpy(menu[2][packetHistIndex], packetBuffer, 16);
+    myStrncpy(menu[2][packetHistIndex], packetBuffer, 16);
     packetHistIndex++;
     if(packetHistIndex>4){packetHistIndex = 1;}    
     
@@ -787,7 +795,7 @@ void sendUDP(char* packet){
     Udp.endPacket();
 
     //save packet to lcd menu
-    strncpy(menu[2][packetHistIndex], packet, 16);
+    myStrncpy(menu[2][packetHistIndex], packet, 16);
     packetHistIndex++;
     if(packetHistIndex>4){packetHistIndex = 1;}
 }
@@ -802,12 +810,12 @@ void stringNav(byte input){
         lcd.setCursor(0,0);
         lcd.cursor_off();
         lcd.blink_off();
-        Serial.println("saving changes");
+        Serial.println(F("saving changes"));
         setIP();
         setSubnet();
         setGateway();
         setAlarmThresholds();
-        Serial.println("select set off");
+        Serial.println(F("select set off"));
         break;
       case 3: //RIGHT
         if(menuStringX<15){
@@ -862,7 +870,7 @@ void menuNav(byte input){
           for (int i = 17 ; i < EEPROM.length() ; i++) {
             EEPROM.write(i, 0);
           }
-          for (int i = 1; i<6; i++){  strncpy(menu[1][i], " ", 16);}
+          for (int i = 1; i<6; i++){  myStrncpy(menu[1][i], " ", 16);}
           eeAddress = 17;
           
         }else{
@@ -914,14 +922,11 @@ void clearLCD()
     }
   }
 
-  strncpy(menu[0][0], "      Home      ", 16);
-  strncpy(menu[1][0], "  Temp History  ", 16);
-  strncpy(menu[2][0], " Packet History ", 16);
-  strncpy(menu[3][0], "    Settings    ", 16);
-  strncpy(menu[3][5], "  Delete Data   ", 16);
-}
-void loadTempData(){
-  
+  myStrncpy(menu[0][0], "      Home      ", 16);
+  myStrncpy(menu[1][0], "  T/H History   ", 16);
+  myStrncpy(menu[2][0], " Packet History ", 16);
+  myStrncpy(menu[3][0], "    Settings    ", 16);
+  myStrncpy(menu[3][5], "  Delete Data   ", 16);
 }
 void setup() {
   // set pins
@@ -939,10 +944,10 @@ void setup() {
   Serial.begin(9600);
 
   //set original ip,subnet,gateway if eeprom storage is messed up 
-  //EEPROM.put(1,ip[0]); EEPROM.put(2,ip[1]); EEPROM.put(3,ip[2]); EEPROM.put(4,ip[3]);
-  //EEPROM.put(5,subnet[0]); EEPROM.put(6,subnet[1]); EEPROM.put(7,subnet[2]); EEPROM.put(8,subnet[3]);
-  //EEPROM.put(9,gateway[0]); EEPROM.put(10,gateway[1]); EEPROM.put(11,gateway[2]); EEPROM.put(12,gateway[3]);
-  //EEPROM.put(13,thresholds[0]);EEPROM.put(14,thresholds[1]);EEPROM.put(15,thresholds[2]);EEPROM.put(16,thresholds[3]);
+  EEPROM.put(1,ip[0]); EEPROM.put(2,ip[1]); EEPROM.put(3,ip[2]); EEPROM.put(4,ip[3]);
+  EEPROM.put(5,subnet[0]); EEPROM.put(6,subnet[1]); EEPROM.put(7,subnet[2]); EEPROM.put(8,subnet[3]);
+  EEPROM.put(9,gateway[0]); EEPROM.put(10,gateway[1]); EEPROM.put(11,gateway[2]); EEPROM.put(12,gateway[3]);
+  EEPROM.put(13,thresholds[0]);EEPROM.put(14,thresholds[1]);EEPROM.put(15,thresholds[2]);EEPROM.put(16,thresholds[3]);
   //
   //load ip subnet gateway from eeprom
   ip[0] = EEPROM.read(1); ip[1] = EEPROM.read(2); ip[2] = EEPROM.read(3); ip[3] = EEPROM.read(4);
@@ -969,13 +974,13 @@ void setup() {
   //load settings
   char str[16];
   sprintf(str, "%d.%d.%d.%d", ip[0],ip[1],ip[2],ip[3]);
-  strncpy(menu[3][1], str, 16);
+  myStrncpy(menu[3][1], str, 16);
   sprintf(str, "%d.%d.%d.%d", subnet[0],subnet[1],subnet[2],subnet[3]);
-  strncpy(menu[3][2], str, 16);  
+  myStrncpy(menu[3][2], str, 16);  
   sprintf(str, "%d.%d.%d.%d", gateway[0],gateway[1],gateway[2],gateway[3]);
-  strncpy(menu[3][3], str, 16);
+  myStrncpy(menu[3][3], str, 16);
   sprintf(str, "%d<%d<%d<%d", thresholds[0],thresholds[1],thresholds[2],thresholds[3]);
-  strncpy(menu[3][4], str, 16);
+  myStrncpy(menu[3][4], str, 16);
   readTempHumidity();
 }
 void loop() {
@@ -989,6 +994,7 @@ void loop() {
     }
     else{
       menuNav(state);
+      drawLCD(currentMilSec);
     }
   }
   //NETWORK
@@ -998,7 +1004,7 @@ void loop() {
   blinkLED(currentMilSec, &lights[1]);
   blinkRGB(currentMilSec);
   TempThresholdCheck(currentMilSec);
-  drawLCD(currentMilSec);
+
 
   // TAKE INPUT FROM SERIAL
   if(Serial.available()>0){
