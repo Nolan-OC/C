@@ -1,3 +1,4 @@
+//AT93C46/
 #define SBAUD 9600
 
 
@@ -5,12 +6,17 @@
 #define SK 3
 #define DI 4
 #define DO 5
+#define ORG 6
 
 #define DBG 10
 #define DBG2 11
 
 #define CMDMSK 0x200
 
+int bitWidth = 8;
+bool writtenEight = false;
+
+char lastChar = ' '; //for some reason ' is being sent after every key press, so this is to track '
 void cmdout(int cmd, int msk){
   byte j;
   for(j=0; j<10; j++){
@@ -29,40 +35,43 @@ int datin(byte cnt){
   int v;
   byte j;
   v=0;
+
   for(j=0; j<cnt; j++){
     v = v<<1;
     digitalWrite(SK,HIGH);
     v = v | digitalRead(DO);
     digitalWrite(SK,LOW);
   }
+
+//  Serial.println();Serial.print("recieving bits for ");Serial.println(v,HEX);
+//  Serial.println(v,BIN);
   return v;
   
 }
 
-void datout(int v, byte cnt){
+void datout(int v, byte cnt) {
   byte j;
-  int msk;
-  msk=0x8000;  // d15 msk
-  if (cnt==8) msk=0x80;  // d7 msk
-  for(j=0; j<cnt; j++){
-    if(v & msk){
-      digitalWrite(DI,HIGH);
+  int msk = (cnt == 8) ? 0x80 : 0x8000;  // Set the appropriate mask based on the number of bits
+  writtenEight = (cnt == 8) ? true : false;
+  for (j = 0; j < cnt; j++) {
+    if (v & msk) {
+      digitalWrite(DI, HIGH);
     } else {
-      digitalWrite(DI,LOW);
+      digitalWrite(DI, LOW);
     }
     digitalWrite(SK, HIGH);  // clock data into NV
-    v = v<<1;
     digitalWrite(SK, LOW);
-    
+    v = v<<1;
   }
+  
 }
 
-void NV_wral(int v){
+void NV_wral(int v){  //v is value to be stored
   int cmd;
   cmd = 0x220;
   digitalWrite(CS,HIGH);
   cmdout(cmd, CMDMSK);
-  datout(v, 8);  
+  datout(v, bitWidth);
   digitalWrite(CS,LOW);
   digitalWrite(CS,HIGH);
   while( 0 == digitalRead(DO));
@@ -83,11 +92,13 @@ void NV_ewen(){
   digitalWrite(CS,HIGH);
   cmdout(cmd, CMDMSK);
   digitalWrite(CS,LOW);
+  
 }
 
 void NV_eral(){
   int cmd;
   cmd = 0x240;
+//  Serial.println(cmd, BIN);
   digitalWrite(CS,HIGH);
   cmdout(cmd, CMDMSK);
   digitalWrite(CS,LOW);
@@ -97,31 +108,36 @@ void NV_eral(){
   
 }
 
-
-int NV_read(byte adr){
+int NV_read(byte adr) {
   int cmd;
   int v;
   cmd = 0x300 + adr;
-  digitalWrite(CS,HIGH);
+  digitalWrite(CS, HIGH);
   cmdout(cmd, CMDMSK);
-  v = datin(8);  
-  digitalWrite(CS,LOW);
+  v = datin(bitWidth);
+  digitalWrite(CS, LOW);
   return v;
-}
-
-void NV_write(byte adr, int v){
-  int cmd;
-  cmd = 0x280 + adr;
-  digitalWrite(CS,HIGH);
-  cmdout(cmd, CMDMSK);
-  datout(v,8);  
-  digitalWrite(CS,LOW);
-  digitalWrite(CS,HIGH);
-  while( 0 == digitalRead(DO));
-  digitalWrite(CS,LOW);
   
 }
 
+void NV_write(byte adr, int v) {
+  int cmd;
+  if (bitWidth == 16) {
+    cmd = 0x280 + (adr & 0x3F);  // Use 6-bit address in the lower 6 bits
+  }else{ 
+    cmd = 0x280 + adr;
+  }
+//  Serial.println(cmd, BIN);
+  digitalWrite(CS, HIGH);
+  cmdout(cmd, CMDMSK);
+  datout(v,bitWidth);
+
+  digitalWrite(CS, LOW);
+  digitalWrite(CS, HIGH);
+  while (0 == digitalRead(DO));
+  digitalWrite(CS, LOW);
+  
+}
 void NV_erase(byte adr){
   int cmd;
   cmd = 0x380 + adr;
@@ -134,102 +150,304 @@ void NV_erase(byte adr){
   
 }
 
-void setup() {
-    pinMode(DBG, OUTPUT);
-    pinMode(DBG2, OUTPUT);
-    
-    pinMode(CS, OUTPUT);
-    pinMode(SK, OUTPUT);
-    pinMode(DI, OUTPUT);
-    pinMode(DO, INPUT_PULLUP);
-    Serial.begin(SBAUD);
-    Serial.print("\nCold Boot\n");
-    digitalWrite(CS, LOW);
-    digitalWrite(SK, LOW);
-    digitalWrite(DI, LOW);
-    
+void hex_Dump() {
+  Serial.print(bitWidth); Serial.println(F(" bit mode")); 
+
+  if (bitWidth == 8) { // 8 BIT MODE
+    for (int row = 0; row < 8; row++) {
+      Serial.print(F("Row "));
+      Serial.print(row);
+      Serial.print(F(": "));
+
+      // setup ascii arr to track valid chars
+      char asciiChars[17]; // 16 characters + '\0'
+
+      for (int col = 0; col < 16; col++) {
+        int address = row * 16 + col;
+        int data = NV_read(address);
+
+        // print data as hex and add leading 0s
+        if (data < 0x10) {
+          Serial.print('0');
+        }
+        Serial.print(data, HEX);
+
+        Serial.print(F(" "));
+
+        // store valid ascii chars
+        if (isAsciiPrintable(data)) {
+          asciiChars[col] = char(data);
+        } else {
+          asciiChars[col] = '.';
+        }
+      }
+
+      asciiChars[16] = '\0';
+
+      // show valid ASCII characters
+      Serial.print("  ");
+      Serial.print(asciiChars);
+      Serial.println();
+    }
+  } else { // 16 BIT MODE
+    for (int row = 0; row < 8; row++) {
+      Serial.print(F("Row "));
+      Serial.print(row);
+      Serial.print(F(": "));
+
+      // setup ascii arr to track valid chars
+      char asciiChars[17]; // 16 characters + '\0'
+
+      for (int col = 0; col < 8; col++) { // Read 16-bit values, so 8 columns for 8x16 configuration
+        int address = row * 8 + col;
+        int data = NV_read(address);
+
+        // store valid ascii chars
+        int highB = (data >> 8) & 0xFF;
+        int lowB = data & 0xFF;
+        
+        // todo print data as hex and add leading 0s
+        Serial.print(highB, HEX);
+        Serial.print(lowB, HEX);
+        Serial.print(F(" "));
+        
+        if (isAsciiPrintable(highB)) {
+          asciiChars[col * 2] = char(highB);
+        } else {
+          asciiChars[col * 2] = '.';
+        }
+
+        if (isAsciiPrintable(lowB)) {
+          asciiChars[col * 2 + 1] = char(lowB);
+        } else {
+          asciiChars[col * 2 + 1] = '.';
+        }
+      }
+
+      asciiChars[16] = '\0';
+
+      // show valid ASCII characters
+      Serial.print("  ");
+      Serial.print(asciiChars);
+      Serial.println();
+    }
+  }
 }
+
+
+bool isAsciiPrintable(byte value) {
+  return (value >= 32 && value <= 126);
+  
+}
+void write_ascending()
+{
+  if (bitWidth == 8) {
+        for(int i = 0; i<128; i++){
+          NV_write(i, i);
+        }
+  } else {
+    for(int i = 0; i<64; i++){
+        int combinedValue = (i << 8) | i+1;
+        NV_write(i,combinedValue);
+        i++;
+    }
+  } 
+}
+
+
+void write_String(byte strtAdr, char str[]){
+  byte len = 0;
+  byte adr = strtAdr;
+  while (str[len] != '\0') {
+    NV_write(adr, str[len]);
+    
+    adr++;
+    len++; 
+  }
+  
+}
+
+void print_Menu(){
+  Serial.println();
+  Serial.println(F("Test Menu"));
+  Serial.println(F("1 - NVRAM Hex Dump"));
+  Serial.println(F("2 - EWEN Write Enable"));
+  Serial.println(F("3 - EWDS Write Disable"));
+  Serial.println(F("4 - "));
+  Serial.println(F("5 - ERAL Erase ALL"));
+  Serial.println(F("6 - Write  0:12,34,56,78,9A,BC,DE,FA"));
+  Serial.println(F("7 - Write  0:22,44,66,88,AA,BB,CC,DD"));
+  Serial.println(F("8 - Erase  0, 3,4, 7"));
+  if(bitWidth == 8){Serial.println(F("9 - Switch to 16 bit mode"));}
+  else{Serial.println(F("9 - Switch to 8 bit mode"));}
+  Serial.println(F("a - Write Ascending Nums"));
+  Serial.println(F("b - Write Hello World at address:10"));
+  Serial.println(F("c - Write Digitize at address:50"));
+  Serial.println(F("d - Write Bob Boss at address:65"));
+  Serial.println(F("e - WRAL 0x21"));
+  Serial.println(F("f - WRAL 0xA5"));
+  Serial.println(F("CDM: "));
+  
+}
+void setup() {
+  pinMode(DBG, OUTPUT);
+  pinMode(DBG2, OUTPUT);
+  
+  pinMode(CS, OUTPUT);
+  pinMode(SK, OUTPUT);
+  pinMode(DI, OUTPUT);
+  pinMode(DO, INPUT_PULLUP);
+  pinMode(ORG, OUTPUT);
+  Serial.begin(SBAUD);
+  Serial.print("\nCold Boot\n");
+  digitalWrite(CS, LOW);
+  digitalWrite(SK, LOW);
+  digitalWrite(DI, LOW);
+  digitalWrite(ORG,LOW);
+
+  int a = 20;
+  int b = 99;
+  long c = (a << 8) | b;
+
+  Serial.println(sizeof(a));
+  Serial.println(sizeof(c));
+  Serial.println(a,BIN);
+  Serial.println(b,BIN);
+  Serial.println(c,BIN);
+}
+
 void loop() {
   int bug=0;
   char ch;
   int x;
   int v;
-  
-  Serial.println(F("\n\n93c46 Test Menu"));
-  Serial.println(F("1 - READ 8 bytes"));
-  Serial.println(F("2 - EWEN Write Enable"));
-  Serial.println(F("3 - EWDS Write DISable"));
-  Serial.println(F("4 - WRAL 0xA5"));
-  Serial.println("5 - ERAL Erase ALL");
-  Serial.println("6 - Write  0:12,34,56,78,9A,BC,DE,FA");
-  Serial.println("7 - Write  0:22,44,66,88,AA,BB,CC,DD");
-  Serial.println("8 - Erase  0, 3,4, 7");
-//  Serial.println("");
-  Serial.println("CDM: ");
+
+  if(lastChar == 10){lastChar = ' ';}
+  else{print_Menu();}
+
   while(Serial.available()==0);  // wait for input
   ch= Serial.read();   // Note - Handle CR LF on input
+  lastChar = ch;
+  
+  Serial.println();
+  Serial.print(F("Input: ")); Serial.println(ch);
 
   switch (ch) {
-    
     case '1':
-      Serial.print("Reading 8 Bytes");
-      for(x=0; x<8; x++){
-        v=NV_read(x);
-        Serial.print("Read ");
-        Serial.print(x);
-        Serial.print(" : ");
-        Serial.println(v, HEX);
-      }
+      Serial.println(F("Hex Dump"));
+      hex_Dump();
       break;
     case '2':
-      Serial.print("EWEN Write Enable");
+      Serial.print(F("EWEN Write Enable"));
         NV_ewen();
       break;
     case '3':
-      Serial.print("EWDS Write DISable");
+      Serial.print(F("EWDS Write Disable"));
         NV_ewds();
       break;
     case '4':
-      Serial.print("WRAL Write ALL = 0xA5");
-        NV_wral(0xA5);
       break;
     case '5':
-      Serial.print("ERAL Erase ALL");
+      Serial.print(F("ERAL Erase ALL"));
         NV_eral();
       break;
     case '6':
-      Serial.print("Write  0:12,34,56,78,9A,BC,DE,FA");
-        NV_write(0,0x12);
-        NV_write(1,0x34);
-        NV_write(2,0x56);
-        NV_write(3,0x78);
-        NV_write(4,0x9A);
-        NV_write(5,0xBC);
-        NV_write(6,0xDE);
-        NV_write(7,0xFA);
+        Serial.print(F("Write 0:12,34,56,78,9A,BC,DE,FA"));
+        if (bitWidth == 8) {
+          NV_write(0,0x12);
+          NV_write(1,0x34);
+          NV_write(2,0x56);
+          NV_write(3,0x78);
+          NV_write(4,0x9A);
+          NV_write(5,0xBC);
+          NV_write(6,0xDE);
+          NV_write(7,0xFA);
+        } else {
+          // write the same thing but merging bits to 16 before writing
+          int combinedValue = (0x12 << 8) | 0x34;
+          NV_write(0, combinedValue);
+          combinedValue = (0x56 << 8) | 0x78;
+          NV_write(1, combinedValue);
+          combinedValue = (0x9A << 8) | 0xBC;
+          NV_write(2, combinedValue);
+          combinedValue = (0xDE << 8) | 0xFA;
+          NV_write(3, combinedValue);
+        }
       break;
     case '7':
-      Serial.print("Write  0:22,44,66,88,AA,BB,CC,DD");
-        NV_write(0,0x22);
-        NV_write(1,0x44);
-        NV_write(2,0x66);
-        NV_write(3,0x88);
-        NV_write(4,0xAA);
-        NV_write(5,0xBB);
-        NV_write(6,0xCC);
-        NV_write(7,0xDD);
+      Serial.print(F("Write  0:22,44,66,88,AA,BB,CC,DD"));
+        if (bitWidth == 8) {
+          NV_write(0,0x22);
+          NV_write(1,0x44);
+          NV_write(2,0x66);
+          NV_write(3,0x88);
+          NV_write(4,0xAA);
+          NV_write(5,0xBB);
+          NV_write(6,0xCC);
+          NV_write(7,0xDD);
+        } else {
+          // write the same thing but merging bits to 16 before writing
+          int combinedValue = (0x22 << 8) | 0x44;
+          NV_write(0, combinedValue);
+          combinedValue = (0x66 << 8) | 0x88;
+          NV_write(0, combinedValue);
+          combinedValue = (0xAA << 8) | 0xBB;
+          NV_write(0, combinedValue);
+          combinedValue = (0xCC << 8) | 0xDD;
+          NV_write(0, combinedValue);          
+        }
       break;
     case '8':
-      Serial.print("Erase  0, 3,4, 7");
+      //Serial.print(F("Erase  0, 3, 4, 7"));
         NV_erase(0);
         NV_erase(3);
         NV_erase(4);
         NV_erase(7);
       break;
+    case '9':
+      Serial.print(F("Switching bit width"));
+      if (bitWidth == 8) {
+        bitWidth = 16;
+        digitalWrite(ORG, HIGH);
+        Serial.println(F(" to 16-bit"));
+      } else {
+        bitWidth = 8;
+        digitalWrite(ORG,LOW);
+        Serial.println(F(" to 8-bit"));
+      }
+      break;
+    case 'a':
+      Serial.println(F("Fill Seq Nums"));
+      write_ascending();
+      break;
+    case 'b':
+      Serial.println(F("Print Hello World:10"));
+      char str[12] = "Hello World";
+      write_String(10, str);
+      break;
     default:
       break;
-    
-  }//switch
+  }
+
+//BUG - CASE STATEMENTS DO NOT WORK PAST 'b' CASE. SWITCHING TO IF STATEMENTS
+  if(ch == 'c'){
+    Serial.println(F("Print Digitize :50"));
+    char str[9] = "Digitize";
+    write_String(50, str);
+  }
+  else if(ch == 'd'){
+    Serial.println(F("Print Bob Boss :65"));
+    char str[9] = "Bob Boss";
+    write_String(65, str);
+  }
+  else if(ch == 'e'){
+    Serial.println(F("WRAL Write All = 0x21"));
+    NV_wral(0x21);
+  }
+  else if(ch == 'f'){
+    Serial.println(F("WRAL Write All = 0xA5"));
+    NV_wral(0xA5);
+  }  
   digitalWrite(DBG, bug & 1);
   bug++;
 }
